@@ -1,0 +1,1 @@
+Da una descripcion detallada de lo que ves en la imagen. Si es un comprobante de pago, extrae todos los datos relevantes (monto, fecha, referencia, banco). Si es una foto de un problema de mantenimiento, describe el problema detalladamente.
