@@ -74,14 +74,18 @@ async def fetch_pending(chat_id: str) -> list[dict[str, Any]]:
 
 
 async def mark_processed(ids: list[int]) -> None:
+    """Borra las filas ya procesadas (equivalente al `Redis Delete` del flujo n8n).
+
+    Mantenemos el nombre `mark_processed` para no tocar callers; lo que hace ahora
+    es `DELETE` en lugar de `UPDATE`, ahorrando espacio en Supabase.
+    """
     if not ids:
         return
-    now = datetime.now(timezone.utc).isoformat()
     await asyncio.to_thread(
         lambda: (
             supabase()
             .table("message_buffer")
-            .update({"processed": True, "processed_at": now})
+            .delete()
             .in_("id", ids)
             .execute()
         )
