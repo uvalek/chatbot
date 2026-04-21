@@ -1,0 +1,161 @@
+"""Upsert de leads en la tabla `contactos` de Supabase (CRM propio).
+
+Reemplaza la integración con HubSpot. La tabla tiene la columna
+`propiedad_interesada` (FK → propiedades.id), así que aceptamos:
+  - `propiedad_interesada_id`: si el agente ya tiene el ID exacto.
+  - `propiedad_interesada_nombre`: fallback, hacemos lookup en `propiedades`
+    por nombre o zona y resolvemos al ID.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+from typing import Any
+
+import structlog
+
+from app.db import supabase
+
+log = structlog.get_logger(__name__)
+
+
+async def _resolve_propiedad_id(
+    propiedad_id: int | None,
+    propiedad_nombre: str | None,
+) -> int | None:
+    if propiedad_id:
+        try:
+            return int(propiedad_id)
+        except (TypeError, ValueError):
+            pass
+    if not propiedad_nombre:
+        return None
+    name = propiedad_nombre.strip()
+    if not name:
+        return None
+
+    # 1) Match por nombre (substring)
+    res = await asyncio.to_thread(
+        lambda: (
+            supabase()
+            .table("propiedades")
+            .select("id")
+            .ilike("nombre", f"%{name}%")
+            .limit(1)
+            .execute()
+        )
+    )
+    rows = res.data or []
+    if rows:
+        return int(rows[0]["id"])
+
+    # 2) Fallback por zona
+    res2 = await asyncio.to_thread(
+        lambda: (
+            supabase()
+            .table("propiedades")
+            .select("id")
+            .ilike("zona", f"%{name}%")
+            .limit(1)
+            .execute()
+        )
+    )
+    rows2 = res2.data or []
+    if rows2:
+        return int(rows2[0]["id"])
+
+    log.warning("propiedad_no_resuelta", nombre=name)
+    return None
+
+
+def _to_float(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(str(v).replace(",", "").replace("$", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+async def upsert_contacto(
+    *,
+    nombre: str,
+    correo: str,
+    telefono: str | None = None,
+    zona_interes: str | None = None,
+    presupuesto_max: Any = None,
+    tipo_credito: str | None = None,
+    fecha_visita_iso: str | None = None,
+    propiedad_interesada_id: int | None = None,
+    propiedad_interesada_nombre: str | None = None,
+    etapa_seguimiento: str = "visita_agendada",
+) -> dict[str, Any]:
+    propiedad_id = await _resolve_propiedad_id(
+        propiedad_interesada_id, propiedad_interesada_nombre
+    )
+
+    payload: dict[str, Any] = {
+        "nombre": nombre,
+        "etapa_seguimiento": etapa_seguimiento,
+    }
+    if correo:
+        payload["correo"] = correo
+    if telefono:
+        payload["telefono"] = telefono
+    if zona_interes:
+        payload["zona_interes"] = zona_interes
+    pmax = _to_float(presupuesto_max)
+    if pmax is not None:
+        payload["presupuesto_max"] = pmax
+    if tipo_credito:
+        payload["tipo_credito"] = tipo_credito
+    if fecha_visita_iso:
+        # acepta string ISO; Supabase parsea timestamptz
+        payload["fecha_visita"] = fecha_visita_iso
+    if propiedad_id is not None:
+        payload["propiedad_interesada"] = propiedad_id
+
+    # Upsert manual por correo (no hay unique constraint)
+    if correo:
+        existing = await asyncio.to_thread(
+            lambda: (
+                supabase()
+                .table("contactos")
+                .select("id")
+                .eq("correo", correo)
+                .limit(1)
+                .execute()
+            )
+        )
+        rows = existing.data or []
+        if rows:
+            cid = rows[0]["id"]
+            res = await asyncio.to_thread(
+                lambda: (
+                    supabase()
+                    .table("contactos")
+                    .update(payload)
+                    .eq("id", cid)
+                    .execute()
+                )
+            )
+            log.info("contacto_actualizado", id=cid, correo=correo, propiedad=propiedad_id)
+            return (res.data or [{"id": cid}])[0]
+
+    res = await asyncio.to_thread(
+        lambda: supabase().table("contactos").insert(payload).execute()
+    )
+    log.info("contacto_creado", correo=correo, propiedad=propiedad_id)
+    return (res.data or [{}])[0]
+
+
+def fecha_visita_from_iso_utc(iso_utc: str) -> str | None:
+    """Devuelve un ISO timestamptz que Supabase puede insertar tal cual."""
+    if not iso_utc:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+        return dt.isoformat()
+    except (TypeError, ValueError):
+        return None

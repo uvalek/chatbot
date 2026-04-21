@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from openai import OpenAI
 
 from app.config import get_settings, load_prompt
-from app.tools import cal, hubspot
+from app.tools import cal, contactos
 
 _SYSTEM = load_prompt("m2_agendamiento")
 
@@ -34,7 +34,7 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": "book_appointment",
-            "description": "Reserva una visita en Cal.com y guarda el lead en HubSpot.",
+            "description": "Reserva una visita en Cal.com y guarda el lead en la tabla `contactos` de Supabase.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -44,6 +44,14 @@ _TOOLS = [
                     "zona_interes": {"type": "string"},
                     "presupuesto_max": {"type": "string"},
                     "tipo_credito": {"type": "string"},
+                    "propiedad_interesada_id": {
+                        "type": "integer",
+                        "description": "ID exacto de la propiedad (columna `id` de propiedades). Úsalo si lo conoces del historial.",
+                    },
+                    "propiedad_interesada_nombre": {
+                        "type": "string",
+                        "description": "Nombre o zona de la propiedad como fallback si no tienes el ID. El servidor resolverá el ID por similitud.",
+                    },
                 },
                 "required": [
                     "startTime",
@@ -149,17 +157,23 @@ async def respond(
                         user_phone=user_phone,
                     )
                     try:
-                        await hubspot.upsert_contact(
-                            email=args["userEmail"],
-                            user_name=args["userName"],
-                            user_phone=user_phone,
-                            booking_start_iso=args["startTime"],
-                            zona_interes=args.get("zona_interes", ""),
-                            presupuesto_max=args.get("presupuesto_max", ""),
-                            tipo_credito=args.get("tipo_credito", ""),
+                        await contactos.upsert_contacto(
+                            nombre=args["userName"],
+                            correo=args["userEmail"],
+                            telefono=user_phone or None,
+                            zona_interes=args.get("zona_interes") or None,
+                            presupuesto_max=args.get("presupuesto_max"),
+                            tipo_credito=args.get("tipo_credito") or None,
+                            fecha_visita_iso=contactos.fecha_visita_from_iso_utc(
+                                args["startTime"]
+                            ),
+                            propiedad_interesada_id=args.get("propiedad_interesada_id"),
+                            propiedad_interesada_nombre=args.get(
+                                "propiedad_interesada_nombre"
+                            ),
                         )
                     except Exception as e:  # noqa: BLE001
-                        booking["hubspot_error"] = str(e)
+                        booking["contactos_error"] = str(e)
                     result = booking
                 elif name == "cambioCita":
                     result = await _cambio_cita(args, user_phone)
