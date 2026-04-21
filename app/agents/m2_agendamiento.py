@@ -60,6 +60,7 @@ _TOOLS = [
                     "zona_interes",
                     "presupuesto_max",
                     "tipo_credito",
+                    "propiedad_interesada_nombre",
                 ],
             },
         },
@@ -168,8 +169,9 @@ async def respond(
                                 args["startTime"]
                             ),
                             propiedad_interesada_id=args.get("propiedad_interesada_id"),
-                            propiedad_interesada_nombre=args.get(
-                                "propiedad_interesada_nombre"
+                            propiedad_interesada_nombre=(
+                                args.get("propiedad_interesada_nombre")
+                                or args.get("zona_interes")  # fallback si LLM olvidó el nombre
                             ),
                         )
                     except Exception as e:  # noqa: BLE001
