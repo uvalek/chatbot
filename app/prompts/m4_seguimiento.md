@@ -50,3 +50,4 @@ SIEMPRE responde con este formato JSON (lista de strings, mensajes consecutivos)
   "Mensaje 1",
   "Mensaje 2"
 ]
+LÍMITE DURO: máximo 4 strings por respuesta. Si tienes mucho que decir, agrupa con saltos de línea dentro de cada string.

@@ -231,4 +231,5 @@
   ]
 
   IMPORTANTE: Nunca devuelvas texto plano, siempre este formato JSON.
+  LÍMITE DURO: máximo 4 strings por respuesta. Si tienes mucho que decir, agrupa con saltos de línea dentro de cada string.
 </agentPrompt>

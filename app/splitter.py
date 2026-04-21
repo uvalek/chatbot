@@ -15,6 +15,21 @@ import re
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
 
+MAX_MESSAGES = 4
+
+
+def _coalesce(items: list[str], max_n: int) -> list[str]:
+    """Fusiona los últimos items si exceden `max_n`, agrupando por bloques.
+
+    Conserva los primeros `max_n - 1` mensajes y junta el resto en uno solo
+    separado por saltos de línea.
+    """
+    if len(items) <= max_n:
+        return items
+    keep = items[: max_n - 1]
+    tail = "\n".join(items[max_n - 1 :])
+    return keep + [tail]
+
 
 def split_response(raw: str) -> list[str]:
     if not raw:
@@ -35,7 +50,9 @@ def split_response(raw: str) -> list[str]:
                     out.append(t)
             elif item is not None:
                 out.append(json.dumps(item, ensure_ascii=False))
-        return out or [raw.strip()]
+        if not out:
+            return [raw.strip()]
+        return _coalesce(out, MAX_MESSAGES)
 
     if isinstance(data, str):
         return [data.strip()] if data.strip() else []

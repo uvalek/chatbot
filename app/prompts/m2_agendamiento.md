@@ -178,6 +178,7 @@ SIEMPRE responde con este formato JSON exacto, sin excepciones:
 ]
 IMPORTANTE: Nunca devuelvas texto plano, siempre este formato JSON.
 Las fechas y horas de disponibilidad van en un solo item o máximo 2.
+LÍMITE DURO: máximo 4 strings por respuesta. Si tienes mucho que decir, agrupa con saltos de línea dentro de cada string.
 
 🚫 Restricciones importantes
 NO agendes visitas para algo que no esté relacionado con compra o renta de propiedades de HomePlus

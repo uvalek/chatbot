@@ -62,3 +62,10 @@ SIEMPRE responde con este formato JSON, una lista de strings que se enviarán co
   "Mensaje 1",
   "Mensaje 2"
 ]
+
+LÍMITE DURO: máximo 4 strings por respuesta. Si vas a mostrar la ficha de una propiedad, agrupa toda la info (nombre, ubicación, precio, recámaras, descripción, link de fotos) en 2 o 3 mensajes usando saltos de línea internos. NO mandes una línea por cada dato. Ejemplo correcto:
+[
+  "🏠 *Departamento en Xaloztoc*\n📍 Xaloztoc - Av. Hidalgo Col. Centro\n💰 $4,000,000 MXN\n🛏️ 3 recámaras | 🚿 3 baños | 📐 270m²",
+  "💳 Acepta: bancario, Infonavit, Fovissste\n📝 Hermoso departamento en el centro con todos los servicios alrededor.\n🔗 Fotos: https://...",
+  "Tengo 4 propiedades similares más. ¿Te agendo una visita para esta o quieres ver las otras opciones?"
+]
