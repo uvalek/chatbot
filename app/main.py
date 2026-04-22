@@ -21,6 +21,35 @@ log = structlog.get_logger(__name__)
 app = FastAPI(title="Chatbot Home Plus")
 
 
+async def _reaper_loop() -> None:
+    """Procesa mensajes huérfanos del buffer (cuando el contenedor reinicia
+    mientras un `schedule_flush` dormía sus 25 s). Corre dentro del mismo
+    proceso web para no depender de un segundo servicio en EasyPanel.
+    """
+    interval = max(5, settings.buffer_window_seconds // 2)
+    log.info("reaper_start", interval=interval)
+    while True:
+        try:
+            n = await buffer.reap_orphans(dispatch)
+            if n:
+                log.info("reaper_processed", count=n)
+        except Exception as e:  # noqa: BLE001
+            log.exception("reaper_error", error=str(e))
+        await asyncio.sleep(interval)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    # Pasada inmediata para limpiar lo que quedó en vuelo del contenedor anterior
+    try:
+        n = await buffer.reap_orphans(dispatch)
+        if n:
+            log.info("reaper_boot_processed", count=n)
+    except Exception as e:  # noqa: BLE001
+        log.exception("reaper_boot_error", error=str(e))
+    asyncio.create_task(_reaper_loop())
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
