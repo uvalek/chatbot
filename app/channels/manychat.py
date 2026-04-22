@@ -73,7 +73,6 @@ async def send_messages(chat_id: str, chunks: list[str]) -> None:
                         "messages": [{"type": "text", "text": text}],
                     },
                 },
-                "message_tag": "ACCOUNT_UPDATE",
             }
             try:
                 r = await http.post(SEND_URL, json=payload)
