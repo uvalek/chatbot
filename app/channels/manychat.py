@@ -13,8 +13,11 @@ import asyncio
 from typing import Any
 
 import httpx
+import structlog
 
 from app.config import get_settings
+
+log = structlog.get_logger(__name__)
 
 SEND_URL = "https://api.manychat.com/fb/sending/sendContent"
 
@@ -56,6 +59,7 @@ async def send_messages(chat_id: str, chunks: list[str]) -> None:
     settings = get_settings()
     token = settings.manychat_api_token
     if not token:
+        log.error("manychat_send_skipped_no_token", chat_id=chat_id)
         return
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=20, headers=headers) as http:
@@ -71,6 +75,18 @@ async def send_messages(chat_id: str, chunks: list[str]) -> None:
                 },
                 "message_tag": "ACCOUNT_UPDATE",
             }
-            await http.post(SEND_URL, json=payload)
+            try:
+                r = await http.post(SEND_URL, json=payload)
+                if r.status_code >= 300:
+                    log.error(
+                        "manychat_send_error",
+                        status=r.status_code,
+                        body=r.text[:500],
+                        chat_id=chat_id,
+                    )
+                else:
+                    log.info("manychat_sent", chat_id=chat_id, chunk=i + 1, total=len(chunks))
+            except Exception as e:  # noqa: BLE001
+                log.exception("manychat_send_exception", error=str(e), chat_id=chat_id)
             if i < len(chunks) - 1:
                 await asyncio.sleep(settings.send_delay_seconds)
