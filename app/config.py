@@ -36,6 +36,10 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # ManyChat test mode (estilo n8n "Execute Workflow")
+    manychat_require_arm: bool = True
+    test_arm_token: str = ""
+
     @property
     def prompts_dir(self) -> Path:
         return Path(__file__).parent / "prompts"

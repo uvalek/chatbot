@@ -8,7 +8,7 @@ import logging
 import structlog
 from fastapi import FastAPI, Header, HTTPException, Request
 
-from app import buffer
+from app import buffer, test_mode
 from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app.config import get_settings
@@ -63,6 +63,10 @@ async def telegram_webhook(
 
 @app.post("/webhook/manychat")
 async def manychat_webhook(request: Request) -> dict[str, str]:
+    if settings.manychat_require_arm and not test_mode.is_armed_manychat():
+        log.info("manychat_ignored_disarmed")
+        return {"status": "disarmed"}
+
     body = await request.json()
     parsed = manychat_chan.parse_webhook(body)
     if not parsed:
@@ -77,4 +81,36 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
         media_url=parsed["media_url"],
     )
     asyncio.create_task(buffer.schedule_flush(parsed["chat_id"], "manychat", dispatch))
+    test_mode.consume_manychat()
     return {"status": "queued"}
+
+
+def _check_token(token: str | None) -> None:
+    expected = settings.test_arm_token
+    if not expected:
+        raise HTTPException(status_code=503, detail="TEST_ARM_TOKEN no configurado")
+    if token != expected:
+        raise HTTPException(status_code=403, detail="invalid token")
+
+
+@app.api_route("/test/manychat/arm", methods=["GET", "POST"])
+async def manychat_arm(
+    token: str | None = None,
+    seconds: int = 600,
+    one_shot: bool = True,
+) -> dict[str, object]:
+    _check_token(token)
+    return test_mode.arm_manychat(seconds=seconds, one_shot=one_shot)
+
+
+@app.api_route("/test/manychat/disarm", methods=["GET", "POST"])
+async def manychat_disarm(token: str | None = None) -> dict[str, str]:
+    _check_token(token)
+    test_mode.disarm_manychat()
+    return {"status": "disarmed"}
+
+
+@app.get("/test/manychat/status")
+async def manychat_status(token: str | None = None) -> dict[str, object]:
+    _check_token(token)
+    return test_mode.status_manychat()
