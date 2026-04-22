@@ -61,13 +61,27 @@ async def telegram_webhook(
     return {"status": "queued"}
 
 
-@app.post("/webhook/manychat")
+@app.api_route("/webhook/manychat", methods=["GET", "POST"])
 async def manychat_webhook(request: Request) -> dict[str, str]:
     if settings.manychat_require_arm and not test_mode.is_armed_manychat():
         log.info("manychat_ignored_disarmed")
         return {"status": "disarmed"}
 
-    body = await request.json()
+    if request.method == "GET":
+        # ManyChat (plan básico) solo permite GET con query params
+        body = dict(request.query_params)
+        # Reconstruye estructura `last_interaction` si vienen mime/url
+        if body.get("media_url") or body.get("mime_type"):
+            body["last_interaction"] = {
+                "url": body.get("media_url", ""),
+                "mime_type": body.get("mime_type", ""),
+            }
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            body = dict(request.query_params)
+
     parsed = manychat_chan.parse_webhook(body)
     if not parsed:
         return {"status": "ignored"}
