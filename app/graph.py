@@ -27,6 +27,7 @@ log = structlog.get_logger(__name__)
 class ChatState(TypedDict, total=False):
     chat_id: str
     channel: Literal["telegram", "manychat"]
+    subchannel: Literal["whatsapp", "instagram", "messenger", "telegram"]
     raw_messages: list[dict[str, Any]]
     user_text: str
     user_phone: str
@@ -77,8 +78,11 @@ async def _m1(state: ChatState) -> dict[str, Any]:
 
 
 async def _m2(state: ChatState) -> dict[str, Any]:
-    # Mapeo de canal interno (manychat) a etiqueta visible (whatsapp).
-    canal_visible = "whatsapp" if state.get("channel") == "manychat" else state.get("channel", "")
+    # Sub-canal visible (whatsapp/instagram/messenger/telegram) — preferimos
+    # el explicito si vino del webhook; si no, derivamos del canal interno.
+    canal_visible = state.get("subchannel") or (
+        "whatsapp" if state.get("channel") == "manychat" else state.get("channel", "")
+    )
     text = await m2_agendamiento.respond(
         state["user_text"],
         state.get("history", []),
@@ -108,7 +112,8 @@ async def _send(state: ChatState) -> dict[str, Any]:
     if state["channel"] == "telegram":
         await telegram_chan.send_messages(state["chat_id"], chunks)
     else:
-        await manychat_chan.send_messages(state["chat_id"], chunks)
+        sub = state.get("subchannel") or "whatsapp"
+        await manychat_chan.send_messages(state["chat_id"], chunks, subchannel=sub)
     return {}
 
 
@@ -130,7 +135,7 @@ async def _extract_lead(state: ChatState) -> dict[str, Any]:
         fields = await extractor.extract(text, state.get("history", []))
         if not fields:
             return {}
-        canal_visible = (
+        canal_visible = state.get("subchannel") or (
             "whatsapp" if state.get("channel") == "manychat" else state.get("channel", "")
         )
         await merge_lead_fields(
@@ -186,6 +191,17 @@ def graph():
 
 async def dispatch(chat_id: str, channel: str, messages: list[dict[str, Any]]) -> None:
     """Punto de entrada que usa el buffer cuando expira la ventana."""
+    # Detecta sub-canal visible (whatsapp/instagram/messenger). Lo inyectamos
+    # en el payload al recibir el webhook (`__subchannel`).
+    subchannel = "telegram" if channel == "telegram" else "whatsapp"
+    for row in messages:
+        payload = row.get("payload") or {}
+        if isinstance(payload, dict):
+            sub = payload.get("__subchannel")
+            if sub in ("whatsapp", "instagram", "messenger", "telegram"):
+                subchannel = sub
+                break
+
     user_phone = ""
     for row in messages:
         payload = row.get("payload") or {}
@@ -201,16 +217,17 @@ async def dispatch(chat_id: str, channel: str, messages: list[dict[str, Any]]) -
     # o numeros mal formateados. Si no es E.164 valido -> "" y no se guarda nada.
     user_phone = _normalize_phone(user_phone) or ""
 
-    # WhatsApp/ManyChat: si el placeholder no se resolvio, pedimos el numero
-    # real a la API de ManyChat usando el subscriber_id (chat_id). En Telegram
-    # / Instagram / Messenger el chatbot le pide el telefono al usuario.
-    if not user_phone and channel == "manychat":
+    # Solo en WhatsApp tiene sentido pedir el telefono via API de ManyChat.
+    # Instagram y Messenger NO tienen telefono asociado al subscriber, asi que
+    # ese flujo lo cubre el agente preguntandolo al usuario.
+    if not user_phone and channel == "manychat" and subchannel == "whatsapp":
         api_phone = await manychat_chan.fetch_subscriber_phone(chat_id)
         user_phone = _normalize_phone(api_phone) or ""
 
     state: ChatState = {
         "chat_id": chat_id,
         "channel": channel,  # type: ignore[typeddict-item]
+        "subchannel": subchannel,  # type: ignore[typeddict-item]
         "raw_messages": messages,
         "user_phone": user_phone,
     }

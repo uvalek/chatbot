@@ -372,23 +372,27 @@ async def send_message(chat_id: str, body: SendMessageBody) -> dict[str, Any]:
     if not text:
         raise HTTPException(status_code=400, detail="text vacio")
 
-    # Detecta canal
+    # Detecta canal interno y sub-canal visible
     bs_map = await _bot_settings_map([chat_id])
     co_map = await _contactos_map([chat_id])
-    channel_internal = (
-        (bs_map.get(chat_id) or {}).get("channel")
-        or (co_map.get(chat_id) or {}).get("canal")
-        or "manychat"
+    bs_channel = (bs_map.get(chat_id) or {}).get("channel")
+    canal_visible = (co_map.get(chat_id) or {}).get("canal")
+
+    channel_internal = bs_channel or (
+        "telegram" if canal_visible == "telegram" else "manychat"
     )
     if channel_internal in ("whatsapp", "instagram", "messenger"):
         channel_internal = "manychat"  # todos pasan por la API de ManyChat
+
+    # Sub-canal para ManyChat: prioriza el guardado en contactos, default whatsapp
+    subchannel = canal_visible if canal_visible in ("whatsapp", "instagram", "messenger") else "whatsapp"
 
     # Envio
     try:
         if channel_internal == "telegram":
             await telegram_chan.send_messages(chat_id, [text])
         else:
-            await manychat_chan.send_messages(chat_id, [text])
+            await manychat_chan.send_messages(chat_id, [text], subchannel=subchannel)
     except Exception as e:  # noqa: BLE001
         log.exception("advisor_send_failed", chat_id=chat_id, error=str(e))
         raise HTTPException(status_code=502, detail=f"Fallo enviando: {e}") from e

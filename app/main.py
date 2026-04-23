@@ -172,10 +172,25 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
         await _store_user_message(parsed["chat_id"], parsed["text"], parsed["media_type"])
         return {"status": "queued_no_bot"}
 
+    # Persiste el sub-canal visible (whatsapp/instagram/messenger) en
+    # bot_settings y contactos.canal para que el dashboard lo etiquete bien.
+    subchannel = parsed.get("subchannel") or "whatsapp"
+    try:
+        await bot_settings.ensure_row(parsed["chat_id"], "manychat")
+        await _ensure_canal(parsed["chat_id"], subchannel)
+    except Exception as e:  # noqa: BLE001
+        log.warning("manychat_persist_canal_failed", error=str(e), chat_id=parsed["chat_id"])
+
+    # Inyectamos el subchannel en el payload del buffer para que el dispatch lo
+    # recupere despues de la ventana (no podemos pasarlo por la firma, esa la
+    # comparte con telegram).
+    payload_with_sub = dict(parsed["raw"]) if isinstance(parsed["raw"], dict) else {}
+    payload_with_sub["__subchannel"] = subchannel
+
     await buffer.insert_message(
         chat_id=parsed["chat_id"],
         channel="manychat",
-        payload=parsed["raw"],
+        payload=payload_with_sub,
         text=parsed["text"],
         media_type=parsed["media_type"],
         media_url=parsed["media_url"],
@@ -183,6 +198,44 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     _spawn(buffer.schedule_flush(parsed["chat_id"], "manychat", dispatch))
     test_mode.consume_manychat()
     return {"status": "queued"}
+
+
+async def _ensure_canal(chat_id: str, canal: str) -> None:
+    """Escribe `contactos.canal` solo si la fila no existe o tiene canal vacio.
+    No pisa ediciones manuales del asesor."""
+    from app.db import supabase  # import local
+    existing = await asyncio.to_thread(
+        lambda: (
+            supabase()
+            .table("contactos")
+            .select("id, canal")
+            .eq("chat_id", chat_id)
+            .limit(1)
+            .execute()
+        )
+    )
+    rows = existing.data or []
+    if not rows:
+        await asyncio.to_thread(
+            lambda: supabase().table("contactos").insert({
+                "chat_id": chat_id,
+                "canal": canal,
+                "nombre": chat_id,
+                "etapa_seguimiento": "nuevo",
+            }).execute()
+        )
+        return
+    row = rows[0]
+    if row.get("canal") in (None, ""):
+        await asyncio.to_thread(
+            lambda: (
+                supabase()
+                .table("contactos")
+                .update({"canal": canal})
+                .eq("id", row["id"])
+                .execute()
+            )
+        )
 
 
 async def _store_user_message(chat_id: str, text: str | None, media_type: str | None) -> None:

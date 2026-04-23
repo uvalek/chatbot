@@ -61,6 +61,9 @@ async def fetch_subscriber_phone(subscriber_id: str) -> str | None:
     return phone or None
 
 
+VALID_SUBCHANNELS = ("whatsapp", "instagram", "messenger")
+
+
 def parse_webhook(body: dict[str, Any]) -> dict[str, Any] | None:
     inner = body.get("body") if isinstance(body.get("body"), dict) else body
     chat_id = (
@@ -85,21 +88,44 @@ def parse_webhook(body: dict[str, Any]) -> dict[str, Any] | None:
             media_type = "audio"
         media_url = url
 
+    # Sub-canal visible (whatsapp/instagram/messenger). Lo manda ManyChat en
+    # cada External Request como ?channel=instagram. Default whatsapp para
+    # mantener compat con el flow viejo de WA.
+    subchannel = (
+        body.get("channel")
+        or inner.get("channel")
+        or inner.get("subchannel")
+        or "whatsapp"
+    )
+    subchannel = str(subchannel).lower().strip()
+    if subchannel not in VALID_SUBCHANNELS:
+        subchannel = "whatsapp"
+
     return {
         "chat_id": str(chat_id),
         "text": text,
         "media_type": media_type,
         "media_url": media_url,
+        "subchannel": subchannel,
         "raw": inner,
     }
 
 
-async def send_messages(chat_id: str, chunks: list[str]) -> None:
+async def send_messages(
+    chat_id: str,
+    chunks: list[str],
+    subchannel: str = "whatsapp",
+) -> None:
+    """Envia mensajes via ManyChat. `subchannel` define el `content.type`:
+    whatsapp | instagram | messenger. Cada uno usa el endpoint del canal
+    conectado al subscriber en ManyChat.
+    """
     settings = get_settings()
     token = settings.manychat_api_token
     if not token:
         log.error("manychat_send_skipped_no_token", chat_id=chat_id)
         return
+    sub = subchannel if subchannel in VALID_SUBCHANNELS else "whatsapp"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=20, headers=headers) as http:
         for i, text in enumerate(chunks):
@@ -108,7 +134,7 @@ async def send_messages(chat_id: str, chunks: list[str]) -> None:
                 "data": {
                     "version": "v2",
                     "content": {
-                        "type": "whatsapp",
+                        "type": sub,
                         "messages": [{"type": "text", "text": text}],
                     },
                 },
@@ -123,7 +149,13 @@ async def send_messages(chat_id: str, chunks: list[str]) -> None:
                         chat_id=chat_id,
                     )
                 else:
-                    log.info("manychat_sent", chat_id=chat_id, chunk=i + 1, total=len(chunks))
+                    log.info(
+                        "manychat_sent",
+                        chat_id=chat_id,
+                        chunk=i + 1,
+                        total=len(chunks),
+                        subchannel=sub,
+                    )
             except Exception as e:  # noqa: BLE001
                 log.exception("manychat_send_exception", error=str(e), chat_id=chat_id)
             if i < len(chunks) - 1:
