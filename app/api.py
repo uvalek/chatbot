@@ -171,6 +171,9 @@ class ConversationPatch(BaseModel):
     zona_interes: Optional[str] = None
     tipo_credito: Optional[str] = None
     presupuesto_max: Optional[float] = None
+    nombre: Optional[str] = None
+    telefono: Optional[str] = None
+    correo: Optional[str] = None
 
 
 class SendMessageBody(BaseModel):

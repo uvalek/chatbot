@@ -156,6 +156,75 @@ async def upsert_contacto(
     return (res.data or [{}])[0]
 
 
+async def merge_lead_fields(
+    *,
+    chat_id: str,
+    canal: str,
+    fields: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Inserta o actualiza `contactos` por chat_id sin sobrescribir.
+
+    Reglas:
+    - Si la fila no existe, la crea con todos los campos provistos.
+    - Si existe, solo escribe los campos cuyo valor actual es NULL/vacio.
+      Asi el asesor puede editar manualmente y el bot no le pisa los datos.
+    """
+    if not chat_id or not fields:
+        return None
+
+    existing = await asyncio.to_thread(
+        lambda: (
+            supabase()
+            .table("contactos")
+            .select("id, nombre, telefono, correo, zona_interes, presupuesto_max, tipo_credito, etapa_seguimiento")
+            .eq("chat_id", chat_id)
+            .limit(1)
+            .execute()
+        )
+    )
+    rows = existing.data or []
+
+    if not rows:
+        # Crear nuevo
+        payload: dict[str, Any] = {"chat_id": chat_id, "canal": canal}
+        for k, v in fields.items():
+            if v not in (None, ""):
+                payload[k] = v
+        # nombre es obligatorio en algunas instalaciones; default al chat_id si no vino
+        payload.setdefault("nombre", fields.get("nombre") or chat_id)
+        payload.setdefault("etapa_seguimiento", fields.get("etapa_seguimiento") or "nuevo")
+        res = await asyncio.to_thread(
+            lambda: supabase().table("contactos").insert(payload).execute()
+        )
+        log.info("contacto_lead_creado", chat_id=chat_id, fields=list(payload.keys()))
+        return (res.data or [{}])[0]
+
+    row = rows[0]
+    cid = row["id"]
+    update: dict[str, Any] = {}
+    for k, v in fields.items():
+        if v in (None, ""):
+            continue
+        cur = row.get(k)
+        if cur in (None, ""):
+            update[k] = v
+
+    if not update:
+        return row
+
+    res = await asyncio.to_thread(
+        lambda: (
+            supabase()
+            .table("contactos")
+            .update(update)
+            .eq("id", cid)
+            .execute()
+        )
+    )
+    log.info("contacto_lead_actualizado", chat_id=chat_id, fields=list(update.keys()))
+    return (res.data or [{"id": cid}])[0]
+
+
 def fecha_visita_from_iso_utc(iso_utc: str) -> str | None:
     """Devuelve un ISO timestamptz que Supabase puede insertar tal cual."""
     if not iso_utc:

@@ -12,13 +12,14 @@ from typing import Any, Literal, TypedDict
 import structlog
 from langgraph.graph import END, StateGraph
 
-from app.agents import m1_faq, m2_agendamiento, m3_catalogo, m4_seguimiento, router
+from app.agents import extractor, m1_faq, m2_agendamiento, m3_catalogo, m4_seguimiento, router
 from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app import memory
 from app.media import describe_image, transcribe_audio
 from app.splitter import split_response
 from app.tools.cal import _normalize_phone
+from app.tools.contactos import merge_lead_fields
 
 log = structlog.get_logger(__name__)
 
@@ -119,6 +120,29 @@ async def _save_memory(state: ChatState) -> dict[str, Any]:
     return {}
 
 
+async def _extract_lead(state: ChatState) -> dict[str, Any]:
+    """Corre despues de send: extrae datos del lead y mergea en `contactos`
+    sin sobrescribir lo que el asesor haya editado a mano."""
+    text = state.get("user_text") or ""
+    if not text.strip():
+        return {}
+    try:
+        fields = await extractor.extract(text, state.get("history", []))
+        if not fields:
+            return {}
+        canal_visible = (
+            "whatsapp" if state.get("channel") == "manychat" else state.get("channel", "")
+        )
+        await merge_lead_fields(
+            chat_id=state.get("chat_id", ""),
+            canal=canal_visible,
+            fields=fields,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("extract_lead_failed", error=str(e))
+    return {}
+
+
 def build_graph():
     g: StateGraph = StateGraph(ChatState)
     g.add_node("resolve_media", _resolve_media)
@@ -131,6 +155,7 @@ def build_graph():
     g.add_node("split", _split)
     g.add_node("send", _send)
     g.add_node("save_memory", _save_memory)
+    g.add_node("extract_lead", _extract_lead)
 
     g.set_entry_point("resolve_media")
     g.add_edge("resolve_media", "load_memory")
@@ -144,7 +169,8 @@ def build_graph():
         g.add_edge(n, "split")
     g.add_edge("split", "send")
     g.add_edge("send", "save_memory")
-    g.add_edge("save_memory", END)
+    g.add_edge("save_memory", "extract_lead")
+    g.add_edge("extract_lead", END)
     return g.compile()
 
 
