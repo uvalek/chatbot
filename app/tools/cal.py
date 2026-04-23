@@ -10,10 +10,23 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
+import structlog
 
 from app.config import get_settings
 
+log = structlog.get_logger(__name__)
+
 BASE = "https://api.cal.com/v2"
+
+
+def _check(r: httpx.Response, op: str) -> None:
+    """Raise con el body de Cal.com incluido (raise_for_status oculta detalles)."""
+    if r.status_code >= 400:
+        body = r.text[:800]
+        log.error("cal_api_error", op=op, status=r.status_code, body=body)
+        raise httpx.HTTPStatusError(
+            f"Cal.com {op} {r.status_code}: {body}", request=r.request, response=r
+        )
 
 
 def _headers(version: str) -> dict[str, str]:
@@ -49,7 +62,7 @@ async def get_slots(start_time: str, end_time: str) -> dict[str, Any]:
     params = {"start": start_time, "end": end_time, "eventTypeId": s.cal_event_type_id}
     async with httpx.AsyncClient(timeout=30) as http:
         r = await http.get(f"{BASE}/slots", params=params, headers=_headers("2024-09-04"))
-        r.raise_for_status()
+        _check(r, "get_slots")
         body = r.json()
 
     if body.get("status") != "success" or not body.get("data"):
@@ -98,7 +111,7 @@ async def book(
     }
     async with httpx.AsyncClient(timeout=30) as http:
         r = await http.post(f"{BASE}/bookings", json=payload, headers=_headers("2024-08-13"))
-        r.raise_for_status()
+        _check(r, "book")
         return r.json()
 
 
@@ -106,7 +119,7 @@ async def list_bookings(email: str, status: str = "upcoming") -> list[dict[str, 
     params = {"status": status, "attendeeEmail": email}
     async with httpx.AsyncClient(timeout=30) as http:
         r = await http.get(f"{BASE}/bookings", params=params, headers=_headers("2024-06-11"))
-        r.raise_for_status()
+        _check(r, "list_bookings")
         body = r.json()
     if body.get("status") != "success":
         return []
@@ -121,7 +134,7 @@ async def reschedule(booking_uid: str, new_start: str) -> dict[str, Any]:
             json=payload,
             headers=_headers("2024-08-13"),
         )
-        r.raise_for_status()
+        _check(r, "reschedule")
         return r.json()
 
 
@@ -133,5 +146,5 @@ async def cancel(booking_uid: str, reason: str = "") -> dict[str, Any]:
             json=payload,
             headers=_headers("2024-08-13"),
         )
-        r.raise_for_status()
+        _check(r, "cancel")
         return r.json()
