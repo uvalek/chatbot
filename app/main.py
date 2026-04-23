@@ -7,6 +7,7 @@ import logging
 
 import structlog
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
 from app import buffer, test_mode
 from app.channels import manychat as manychat_chan
@@ -186,3 +187,202 @@ async def manychat_disarm(token: str | None = None) -> dict[str, str]:
 async def manychat_status(token: str | None = None) -> dict[str, object]:
     _check_token(token)
     return test_mode.status_manychat()
+
+
+# Panel HTML autosuficiente: un solo archivo, sin build, sin frontend separado.
+# El token se guarda en localStorage del navegador; el server NUNCA lo loguea.
+_PANEL_HTML = """<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Panel Bot WhatsApp</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: #0f172a; color: #e2e8f0; padding: 24px;
+  }
+  .card {
+    background: #1e293b; border-radius: 16px; padding: 32px;
+    width: 100%; max-width: 420px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.4);
+  }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 24px; }
+  .status {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px; border-radius: 12px; margin-bottom: 20px;
+    background: #0f172a; border: 1px solid #334155;
+  }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: #475569; transition: background .2s; }
+  .dot.on { background: #22c55e; box-shadow: 0 0 12px #22c55e; }
+  .status-text { font-weight: 600; }
+  .meta { color: #94a3b8; font-size: 12px; margin-top: 2px; }
+  button {
+    width: 100%; padding: 16px; font-size: 16px; font-weight: 700;
+    border: 0; border-radius: 12px; cursor: pointer;
+    transition: transform .05s, opacity .15s;
+    color: #fff;
+  }
+  button:active { transform: scale(.98); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-on { background: #22c55e; }
+  .btn-off { background: #ef4444; }
+  label { display: block; font-size: 12px; color: #94a3b8; margin: 16px 0 6px; }
+  input, select {
+    width: 100%; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid #334155; background: #0f172a; color: #e2e8f0;
+    font-size: 14px;
+  }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .msg { font-size: 12px; margin-top: 12px; min-height: 16px; }
+  .msg.err { color: #f87171; }
+  .msg.ok { color: #4ade80; }
+  .footer { text-align: center; font-size: 11px; color: #64748b; margin-top: 18px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Bot WhatsApp</h1>
+    <div class="sub">Activa el bot solo cuando vayas a probarlo.</div>
+
+    <div class="status">
+      <div class="dot" id="dot"></div>
+      <div>
+        <div class="status-text" id="statusText">Cargando...</div>
+        <div class="meta" id="meta"></div>
+      </div>
+    </div>
+
+    <button id="toggle" disabled>—</button>
+
+    <label for="token">Token</label>
+    <input id="token" type="password" placeholder="TEST_ARM_TOKEN" autocomplete="off" />
+
+    <div class="row">
+      <div>
+        <label for="seconds">Duración</label>
+        <select id="seconds">
+          <option value="300">5 min</option>
+          <option value="600" selected>10 min</option>
+          <option value="1800">30 min</option>
+          <option value="3600">1 hora</option>
+        </select>
+      </div>
+      <div>
+        <label for="mode">Modo</label>
+        <select id="mode">
+          <option value="true" selected>Un mensaje</option>
+          <option value="false">Ventana</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="msg" id="msg"></div>
+    <div class="footer">Estado se refresca cada 5 s</div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const tokenEl = $("token");
+const btn = $("toggle");
+const dot = $("dot");
+const statusText = $("statusText");
+const meta = $("meta");
+const msg = $("msg");
+
+tokenEl.value = localStorage.getItem("bot_token") || "";
+tokenEl.addEventListener("input", () => localStorage.setItem("bot_token", tokenEl.value));
+
+let state = { armed: false, remaining_seconds: 0, one_shot: true };
+
+function render() {
+  if (state.armed) {
+    dot.classList.add("on");
+    statusText.textContent = "ACTIVO";
+    const m = Math.floor(state.remaining_seconds / 60);
+    const s = state.remaining_seconds % 60;
+    meta.textContent = `Modo: ${state.one_shot ? "un mensaje" : "ventana"} · ${m}m ${s}s restantes`;
+    btn.textContent = "Desactivar bot";
+    btn.className = "btn-off";
+  } else {
+    dot.classList.remove("on");
+    statusText.textContent = "INACTIVO";
+    meta.textContent = "El bot ignora todos los mensajes.";
+    btn.textContent = "Activar bot";
+    btn.className = "btn-on";
+  }
+  btn.disabled = !tokenEl.value;
+}
+
+async function call(path, params = {}) {
+  const t = tokenEl.value.trim();
+  if (!t) { showMsg("Falta token", true); return null; }
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("token", t);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  try {
+    const r = await fetch(url, { method: "POST" });
+    if (!r.ok) {
+      const txt = await r.text();
+      showMsg(`Error ${r.status}: ${txt.slice(0, 120)}`, true);
+      return null;
+    }
+    return await r.json();
+  } catch (e) {
+    showMsg("Error de red: " + e.message, true);
+    return null;
+  }
+}
+
+function showMsg(text, isErr = false) {
+  msg.textContent = text;
+  msg.className = "msg " + (isErr ? "err" : "ok");
+  setTimeout(() => { msg.textContent = ""; msg.className = "msg"; }, 4000);
+}
+
+async function refresh() {
+  const t = tokenEl.value.trim();
+  if (!t) { btn.disabled = true; return; }
+  const url = `/test/manychat/status?token=${encodeURIComponent(t)}`;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return;
+    state = await r.json();
+    render();
+  } catch (_) {}
+}
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true;
+  if (state.armed) {
+    const r = await call("/test/manychat/disarm");
+    if (r) showMsg("Bot desactivado", false);
+  } else {
+    const r = await call("/test/manychat/arm", {
+      seconds: $("seconds").value,
+      one_shot: $("mode").value,
+    });
+    if (r) showMsg("Bot activado", false);
+  }
+  await refresh();
+});
+
+tokenEl.addEventListener("change", refresh);
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/panel", response_class=HTMLResponse)
+async def panel() -> HTMLResponse:
+    """Panel visual para activar/desactivar el bot. El token se guarda en
+    localStorage del navegador; el server nunca lo loguea ni lo expone."""
+    return HTMLResponse(_PANEL_HTML)
