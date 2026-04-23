@@ -70,6 +70,15 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/admin/reap")
+async def admin_reap(token: str | None = None) -> dict[str, object]:
+    """Fuerza una pasada del reaper. Util para diagnostico cuando un mensaje
+    queda atascado en buffer."""
+    _check_token(token)
+    n = await buffer.reap_orphans(dispatch)
+    return {"processed": n, "bg_tasks": len(_BG_TASKS)}
+
+
 @app.post("/webhook/telegram")
 async def telegram_webhook(
     request: Request,
