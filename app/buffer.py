@@ -145,15 +145,24 @@ async def reap_orphans(dispatch: Dispatch) -> int:
         ids = [m["id"] for m in msgs]
         log.info("reap_dispatching", chat_id=chat_id, channel=channel, count=len(msgs), ids=ids)
         async with _lock_for(chat_id):
+            # Re-check dentro del lock: si schedule_flush ya proceso (y borro)
+            # estos mensajes mientras esperabamos el lock, NO volvemos a despachar.
+            still_pending = await fetch_pending(chat_id)
+            still_pending_ids = {row["id"] for row in still_pending}
+            fresh = [m for m in msgs if m["id"] in still_pending_ids]
+            if not fresh:
+                log.info("reap_skip_already_processed", chat_id=chat_id, ids=ids)
+                continue
+            fresh_ids = [m["id"] for m in fresh]
             try:
-                await asyncio.wait_for(dispatch(chat_id, channel, msgs), timeout=120)
-                count += len(msgs)
-                log.info("reap_dispatched_ok", chat_id=chat_id, count=len(msgs))
+                await asyncio.wait_for(dispatch(chat_id, channel, fresh), timeout=120)
+                count += len(fresh)
+                log.info("reap_dispatched_ok", chat_id=chat_id, count=len(fresh))
             except asyncio.TimeoutError:
-                log.error("reap_dispatch_timeout", chat_id=chat_id, ids=ids)
+                log.error("reap_dispatch_timeout", chat_id=chat_id, ids=fresh_ids)
                 continue
             except Exception:
-                log.exception("reap_dispatch_failed", chat_id=chat_id, ids=ids)
+                log.exception("reap_dispatch_failed", chat_id=chat_id, ids=fresh_ids)
                 continue
-            await mark_processed(ids)
+            await mark_processed(fresh_ids)
     return count
