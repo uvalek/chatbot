@@ -20,6 +20,45 @@ from app.config import get_settings
 log = structlog.get_logger(__name__)
 
 SEND_URL = "https://api.manychat.com/fb/sending/sendContent"
+SUBSCRIBER_INFO_URL = "https://api.manychat.com/fb/subscriber/getInfo"
+
+
+async def fetch_subscriber_phone(subscriber_id: str) -> str | None:
+    """Pide a la API de ManyChat el telefono real del suscriptor de WhatsApp.
+
+    Lo usamos cuando el placeholder `{{phone}}` del External Request llega sin
+    resolver (campo "Telefono" vacio en el perfil) o como literal. En WhatsApp
+    el numero esta siempre disponible como identificador del contacto.
+    """
+    settings = get_settings()
+    token = settings.manychat_api_token
+    if not token or not subscriber_id:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"subscriber_id": str(subscriber_id)}
+    try:
+        async with httpx.AsyncClient(timeout=10, headers=headers) as http:
+            r = await http.get(SUBSCRIBER_INFO_URL, params=params)
+        if r.status_code >= 300:
+            log.warning(
+                "manychat_subscriber_info_error",
+                status=r.status_code,
+                body=r.text[:300],
+                subscriber_id=subscriber_id,
+            )
+            return None
+        body = r.json()
+    except Exception as e:  # noqa: BLE001
+        log.warning("manychat_subscriber_info_exception", error=str(e), subscriber_id=subscriber_id)
+        return None
+    if body.get("status") != "success":
+        return None
+    data = body.get("data") or {}
+    # ManyChat devuelve `phone` (a veces sin `+`) y/o `whatsapp_phone`.
+    phone = data.get("whatsapp_phone") or data.get("phone")
+    if phone and not str(phone).startswith("+"):
+        phone = "+" + str(phone).lstrip("0")
+    return phone or None
 
 
 def parse_webhook(body: dict[str, Any]) -> dict[str, Any] | None:

@@ -18,6 +18,7 @@ from app.channels import telegram as telegram_chan
 from app import memory
 from app.media import describe_image, transcribe_audio
 from app.splitter import split_response
+from app.tools.cal import _normalize_phone
 
 log = structlog.get_logger(__name__)
 
@@ -163,6 +164,17 @@ async def dispatch(chat_id: str, channel: str, messages: list[dict[str, Any]]) -
         if ph:
             user_phone = ph
             break
+
+    # Sanea valores basura tipo "{{phone}}" (placeholder no resuelto de ManyChat)
+    # o numeros mal formateados. Si no es E.164 valido -> "" y no se guarda nada.
+    user_phone = _normalize_phone(user_phone) or ""
+
+    # WhatsApp/ManyChat: si el placeholder no se resolvio, pedimos el numero
+    # real a la API de ManyChat usando el subscriber_id (chat_id). En Telegram
+    # / Instagram / Messenger el chatbot le pide el telefono al usuario.
+    if not user_phone and channel == "manychat":
+        api_phone = await manychat_chan.fetch_subscriber_phone(chat_id)
+        user_phone = _normalize_phone(api_phone) or ""
 
     state: ChatState = {
         "chat_id": chat_id,
