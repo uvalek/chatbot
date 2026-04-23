@@ -76,8 +76,14 @@ async def _m1(state: ChatState) -> dict[str, Any]:
 
 
 async def _m2(state: ChatState) -> dict[str, Any]:
+    # Mapeo de canal interno (manychat) a etiqueta visible (whatsapp).
+    canal_visible = "whatsapp" if state.get("channel") == "manychat" else state.get("channel", "")
     text = await m2_agendamiento.respond(
-        state["user_text"], state.get("history", []), user_phone=state.get("user_phone", "")
+        state["user_text"],
+        state.get("history", []),
+        user_phone=state.get("user_phone", ""),
+        chat_id=state.get("chat_id", ""),
+        canal=canal_visible,
     )
     return {"agent_response": text}
 

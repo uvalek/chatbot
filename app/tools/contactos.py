@@ -90,6 +90,8 @@ async def upsert_contacto(
     propiedad_interesada_id: int | None = None,
     propiedad_interesada_nombre: str | None = None,
     etapa_seguimiento: str = "visita_agendada",
+    chat_id: str | None = None,
+    canal: str | None = None,
 ) -> dict[str, Any]:
     propiedad_id = await _resolve_propiedad_id(
         propiedad_interesada_id, propiedad_interesada_nombre
@@ -115,6 +117,10 @@ async def upsert_contacto(
         payload["fecha_visita"] = fecha_visita_iso
     if propiedad_id is not None:
         payload["propiedad_interesada"] = propiedad_id
+    if chat_id:
+        payload["chat_id"] = chat_id
+    if canal:
+        payload["canal"] = canal
 
     # Upsert manual por correo (no hay unique constraint)
     if correo:

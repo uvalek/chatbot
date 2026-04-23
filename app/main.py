@@ -7,9 +7,11 @@ import logging
 
 import structlog
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from app import buffer, test_mode
+from app import api as dashboard_api
+from app import bot_settings, buffer, memory, test_mode
 from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app.config import get_settings
@@ -25,6 +27,19 @@ for noisy in ("httpx", "httpcore", "openai._base_client"):
 log = structlog.get_logger(__name__)
 
 app = FastAPI(title="Chatbot Home Plus")
+
+# CORS: permite al dashboard (Vercel + localhost dev) consumir /api/*
+_origins = [o.strip() for o in settings.dashboard_cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_origin_regex=settings.dashboard_cors_origin_regex or None,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+app.include_router(dashboard_api.router)
 
 # Conjunto de tasks vivos. Sin esta referencia fuerte el GC puede matar
 # `asyncio.create_task(...)` a media ejecucion (gotcha conocido de Python).
@@ -108,6 +123,13 @@ async def telegram_webhook(
         except Exception as e:  # noqa: BLE001
             log.warning("telegram_file_resolve_failed", error=str(e))
 
+    # Toggle per-conversacion del dashboard: si el asesor apago el bot para
+    # este chat, guardamos el mensaje en historial (para que aparezca en la UI)
+    # pero no lo metemos al buffer ni disparamos al bot.
+    if not await bot_settings.is_enabled(parsed["chat_id"]):
+        await _store_user_message(parsed["chat_id"], parsed["text"], parsed["media_type"])
+        return {"status": "queued_no_bot"}
+
     await buffer.insert_message(
         chat_id=parsed["chat_id"],
         channel="telegram",
@@ -145,6 +167,11 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     if not parsed:
         return {"status": "ignored"}
 
+    # Toggle per-conversacion (ver telegram_webhook).
+    if not await bot_settings.is_enabled(parsed["chat_id"]):
+        await _store_user_message(parsed["chat_id"], parsed["text"], parsed["media_type"])
+        return {"status": "queued_no_bot"}
+
     await buffer.insert_message(
         chat_id=parsed["chat_id"],
         channel="manychat",
@@ -156,6 +183,23 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     _spawn(buffer.schedule_flush(parsed["chat_id"], "manychat", dispatch))
     test_mode.consume_manychat()
     return {"status": "queued"}
+
+
+async def _store_user_message(chat_id: str, text: str | None, media_type: str | None) -> None:
+    """Guarda un mensaje entrante en historial sin disparar al bot.
+    Usado cuando el asesor apago el bot para esa conversacion."""
+    content = text or ""
+    if not content:
+        if media_type == "audio":
+            content = "[Audio recibido]"
+        elif media_type == "image":
+            content = "[Imagen recibida]"
+        else:
+            return
+    try:
+        await memory.append(chat_id, "user", content)
+    except Exception as e:  # noqa: BLE001
+        log.exception("store_user_msg_failed", chat_id=chat_id, error=str(e))
 
 
 def _check_token(token: str | None) -> None:

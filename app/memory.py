@@ -42,7 +42,19 @@ async def load_history(chat_id: str, limit: int | None = None) -> list[dict[str,
     return history
 
 
-async def append(chat_id: str, role: str, content: str) -> None:
+async def append(
+    chat_id: str,
+    role: str,
+    content: str,
+    *,
+    metadata: dict | None = None,
+) -> None:
+    """Guarda un mensaje en n8n_chat_histories.
+
+    `metadata` se mete en `data.additional_kwargs` y permite distinguir
+    mensajes manuales de asesor (`{"sender": "advisor", "advisor_name": "Ana"}`)
+    de los del bot. El dashboard lo lee para pintar la etiqueta correcta.
+    """
     if not content:
         return
     mtype = _ROLE_TO_TYPE.get(role, "human")
@@ -50,7 +62,11 @@ async def append(chat_id: str, role: str, content: str) -> None:
         "session_id": chat_id,
         "message": {
             "type": mtype,
-            "data": {"content": content, "additional_kwargs": {}, "response_metadata": {}},
+            "data": {
+                "content": content,
+                "additional_kwargs": metadata or {},
+                "response_metadata": {},
+            },
         },
     }
     await asyncio.to_thread(

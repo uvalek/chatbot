@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     manychat_require_arm: bool = True
     test_arm_token: str = ""
 
+    # Dashboard CRM externo (Vite/React en Vercel)
+    # API key compartido (header X-API-Key) y origenes permitidos para CORS.
+    # Acepta lista separada por comas: "https://a.com,https://b.vercel.app"
+    dashboard_api_key: str = ""
+    dashboard_cors_origins: str = (
+        "https://luce-real-estate-landing.vercel.app,http://localhost:5173,http://localhost:3000"
+    )
+    dashboard_cors_origin_regex: str = r"https://.*\.vercel\.app"
+
     @property
     def prompts_dir(self) -> Path:
         return Path(__file__).parent / "prompts"

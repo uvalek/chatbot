@@ -121,6 +121,8 @@ async def respond(
     history: list[dict[str, str]],
     *,
     user_phone: str = "",
+    chat_id: str = "",
+    canal: str = "",
 ) -> str:
     s = get_settings()
     system = _SYSTEM.replace("{{NOW_CDMX}}", _now_cdmx())
@@ -173,6 +175,8 @@ async def respond(
                                 args.get("propiedad_interesada_nombre")
                                 or args.get("zona_interes")  # fallback si LLM olvidó el nombre
                             ),
+                            chat_id=chat_id or None,
+                            canal=canal or None,
                         )
                     except Exception as e:  # noqa: BLE001
                         booking["contactos_error"] = str(e)
