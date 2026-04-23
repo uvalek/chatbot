@@ -145,7 +145,7 @@ async def telegram_webhook(
 @app.api_route("/webhook/manychat", methods=["GET", "POST"])
 async def manychat_webhook(request: Request) -> dict[str, str]:
     if settings.manychat_require_arm and not test_mode.is_armed_manychat():
-        log.info("manychat_ignored_disarmed")
+        log.info("manychat_ignored_disarmed", method=request.method)
         return {"status": "disarmed"}
 
     if request.method == "GET":
@@ -160,15 +160,33 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     else:
         try:
             body = await request.json()
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            log.warning("manychat_body_parse_failed", error=str(e))
             body = dict(request.query_params)
+
+    log.info(
+        "manychat_webhook_in",
+        method=request.method,
+        body_keys=list(body.keys()) if isinstance(body, dict) else None,
+        body_preview={k: (str(v)[:80] if not isinstance(v, dict) else "<dict>") for k, v in (body.items() if isinstance(body, dict) else [])},
+    )
 
     parsed = manychat_chan.parse_webhook(body)
     if not parsed:
+        log.warning("manychat_parse_returned_none", body=body)
         return {"status": "ignored"}
+
+    log.info(
+        "manychat_parsed",
+        chat_id=parsed["chat_id"],
+        subchannel=parsed.get("subchannel"),
+        has_text=bool(parsed.get("text")),
+        media_type=parsed.get("media_type"),
+    )
 
     # Toggle per-conversacion (ver telegram_webhook).
     if not await bot_settings.is_enabled(parsed["chat_id"]):
+        log.info("manychat_queued_no_bot", chat_id=parsed["chat_id"])
         await _store_user_message(parsed["chat_id"], parsed["text"], parsed["media_type"])
         return {"status": "queued_no_bot"}
 
