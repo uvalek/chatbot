@@ -81,11 +81,13 @@ async def set_enabled(chat_id: str, enabled: bool, channel: str | None = None) -
 
 
 async def mark_read(chat_id: str) -> None:
+    # UPDATE en lugar de upsert: la columna `channel` es NOT NULL y al hacer
+    # upsert sin canal Postgres construye la fila a insertar antes de detectar
+    # el conflicto y revienta. Si no existe la fila, no hay nada que marcar.
     payload = {
-        "chat_id": chat_id,
         "last_read_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     await asyncio.to_thread(
-        lambda: supabase().table(TABLE).upsert(payload, on_conflict="chat_id").execute()
+        lambda: supabase().table(TABLE).update(payload).eq("chat_id", chat_id).execute()
     )
