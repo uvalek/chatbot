@@ -85,6 +85,31 @@ async def get_slots(start_time: str, end_time: str) -> dict[str, Any]:
     return {"availability_text": "\n".join(lines), "raw": body, "slots": flat}
 
 
+def _normalize_phone(raw: str | None) -> str | None:
+    """Devuelve el telefono en E.164 o None si no es valido.
+
+    - Quita espacios, guiones, parentesis.
+    - Asegura prefijo `+`.
+    - Mexico WhatsApp viene como +521XXXXXXXXXX (con 1 movil); Cal.com /
+      libphonenumber lo quieren sin el 1: +52XXXXXXXXXX (10 digitos).
+    - Valida largo basico (10-15 digitos despues del +).
+    """
+    if not raw:
+        return None
+    cleaned = "".join(c for c in str(raw) if c.isdigit() or c == "+")
+    if not cleaned:
+        return None
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
+    # +521XXXXXXXXXX (14 chars) -> +52XXXXXXXXXX (13 chars)
+    if cleaned.startswith("+521") and len(cleaned) == 14:
+        cleaned = "+52" + cleaned[4:]
+    digits = cleaned[1:]
+    if not digits.isdigit() or not (10 <= len(digits) <= 15):
+        return None
+    return cleaned
+
+
 async def book(
     *,
     start_time: str,
@@ -94,20 +119,23 @@ async def book(
 ) -> dict[str, Any]:
     """Crea booking en Cal.com. Devuelve la respuesta completa."""
     s = get_settings()
-    phone = (user_phone or "+525500000000").replace("+521", "+52")
+    phone = _normalize_phone(user_phone)
+    attendee: dict[str, Any] = {
+        "name": user_name,
+        "email": user_email,
+        "timeZone": "America/Mexico_City",
+    }
+    booking_fields: dict[str, Any] = {"About": "Cita agendada desde chatbot"}
+    if phone:
+        attendee["phoneNumber"] = phone
+        booking_fields["whatsapp"] = phone
+    else:
+        log.info("cal_book_sin_telefono", raw_phone=user_phone)
     payload = {
         "eventTypeId": s.cal_event_type_id,
         "start": start_time,
-        "attendee": {
-            "name": user_name,
-            "email": user_email,
-            "timeZone": "America/Mexico_City",
-            "phoneNumber": phone,
-        },
-        "bookingFieldsResponses": {
-            "About": "Cita agendada desde chatbot",
-            "whatsapp": phone,
-        },
+        "attendee": attendee,
+        "bookingFieldsResponses": booking_fields,
     }
     async with httpx.AsyncClient(timeout=30) as http:
         r = await http.post(f"{BASE}/bookings", json=payload, headers=_headers("2024-08-13"))
