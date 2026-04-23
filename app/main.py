@@ -20,6 +20,17 @@ log = structlog.get_logger(__name__)
 
 app = FastAPI(title="Chatbot Home Plus")
 
+# Conjunto de tasks vivos. Sin esta referencia fuerte el GC puede matar
+# `asyncio.create_task(...)` a media ejecucion (gotcha conocido de Python).
+_BG_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return task
+
 
 async def _reaper_loop() -> None:
     """Procesa mensajes huérfanos del buffer (cuando el contenedor reinicia
@@ -28,6 +39,7 @@ async def _reaper_loop() -> None:
     """
     interval = max(5, settings.buffer_window_seconds // 2)
     log.info("reaper_start", interval=interval)
+    tick = 0
     while True:
         try:
             n = await buffer.reap_orphans(dispatch)
@@ -35,6 +47,9 @@ async def _reaper_loop() -> None:
                 log.info("reaper_processed", count=n)
         except Exception as e:  # noqa: BLE001
             log.exception("reaper_error", error=str(e))
+        tick += 1
+        if tick % 10 == 0:  # cada ~2 min, una linea de vida
+            log.info("reaper_heartbeat", tick=tick)
         await asyncio.sleep(interval)
 
 
@@ -47,7 +62,7 @@ async def _startup() -> None:
             log.info("reaper_boot_processed", count=n)
     except Exception as e:  # noqa: BLE001
         log.exception("reaper_boot_error", error=str(e))
-    asyncio.create_task(_reaper_loop())
+    _spawn(_reaper_loop())
 
 
 @app.get("/health")
@@ -86,7 +101,7 @@ async def telegram_webhook(
         media_type=parsed["media_type"],
         media_url=media_url,
     )
-    asyncio.create_task(buffer.schedule_flush(parsed["chat_id"], "telegram", dispatch))
+    _spawn(buffer.schedule_flush(parsed["chat_id"], "telegram", dispatch))
     return {"status": "queued"}
 
 
@@ -123,7 +138,7 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
         media_type=parsed["media_type"],
         media_url=parsed["media_url"],
     )
-    asyncio.create_task(buffer.schedule_flush(parsed["chat_id"], "manychat", dispatch))
+    _spawn(buffer.schedule_flush(parsed["chat_id"], "manychat", dispatch))
     test_mode.consume_manychat()
     return {"status": "queued"}
 
