@@ -142,13 +142,18 @@ async def reap_orphans(dispatch: Dispatch) -> int:
 
     count = 0
     for (chat_id, channel), msgs in by_chat.items():
+        ids = [m["id"] for m in msgs]
+        log.info("reap_dispatching", chat_id=chat_id, channel=channel, count=len(msgs), ids=ids)
         async with _lock_for(chat_id):
-            ids = [m["id"] for m in msgs]
             try:
-                await dispatch(chat_id, channel, msgs)
+                await asyncio.wait_for(dispatch(chat_id, channel, msgs), timeout=120)
                 count += len(msgs)
+                log.info("reap_dispatched_ok", chat_id=chat_id, count=len(msgs))
+            except asyncio.TimeoutError:
+                log.error("reap_dispatch_timeout", chat_id=chat_id, ids=ids)
+                continue
             except Exception:
-                log.exception("reap_dispatch_failed", chat_id=chat_id)
+                log.exception("reap_dispatch_failed", chat_id=chat_id, ids=ids)
                 continue
             await mark_processed(ids)
     return count
