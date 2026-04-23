@@ -19,9 +19,12 @@ NOTA: el estado vive en memoria; si reinicias el contenedor se desarma.
 from __future__ import annotations
 
 import time
-from threading import Lock
+from threading import RLock
 
-_lock = Lock()
+# RLock (reentrante) — `consume_manychat` adquiere el lock y llama a
+# `disarm_manychat` que tambien lo adquiere. Con un Lock normal eso es
+# deadlock que congela el event loop entero.
+_lock = RLock()
 _armed_until: float = 0.0
 _one_shot: bool = True
 
