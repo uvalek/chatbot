@@ -29,7 +29,10 @@ class Settings(BaseSettings):
 
     manychat_api_token: str = ""
 
-    buffer_window_seconds: int = 25
+    buffer_window_seconds: int = 30
+    # Intervalo del reaper de huerfanos (segundos). Es solo un respaldo
+    # por si schedule_flush se muere; el flujo normal procesa en `buffer_window_seconds`.
+    reaper_interval_seconds: int = 60
     memory_turns: int = 25
     send_delay_seconds: float = 1.0
     timezone: str = "America/Mexico_City"

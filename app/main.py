@@ -16,6 +16,11 @@ from app.graph import dispatch
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
+# Silencia los INFO de httpx/httpcore (cada llamada a Supabase/OpenAI/ManyChat
+# generaba 1-2 lineas que llenaban los logs sin aportar diagnostico). Solo
+# warnings y errores de esas libs aparecen.
+for noisy in ("httpx", "httpcore", "openai._base_client"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 log = structlog.get_logger(__name__)
 
 app = FastAPI(title="Chatbot Home Plus")
@@ -37,7 +42,7 @@ async def _reaper_loop() -> None:
     mientras un `schedule_flush` dormía sus 25 s). Corre dentro del mismo
     proceso web para no depender de un segundo servicio en EasyPanel.
     """
-    interval = max(5, settings.buffer_window_seconds // 2)
+    interval = max(10, settings.reaper_interval_seconds)
     log.info("reaper_start", interval=interval)
     tick = 0
     while True:
@@ -48,7 +53,7 @@ async def _reaper_loop() -> None:
         except Exception as e:  # noqa: BLE001
             log.exception("reaper_error", error=str(e))
         tick += 1
-        if tick % 10 == 0:  # cada ~2 min, una linea de vida
+        if tick % 30 == 0:  # heartbeat cada ~30 min
             log.info("reaper_heartbeat", tick=tick)
         await asyncio.sleep(interval)
 
