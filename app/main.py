@@ -95,7 +95,7 @@ async def health() -> dict[str, str]:
 # Version "marker" hardcoded — se actualiza con cada feature releveante para
 # poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
 # cambio que necesite confirmacion en produccion.
-_VERSION = "v3-handle-and-phone-2026-04-24"
+_VERSION = "v4-wa-handle-fix-2026-04-24"
 
 
 @app.get("/version")
@@ -216,12 +216,26 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     # bloquea el flujo del bot.
     subchannel = parsed.get("subchannel") or "whatsapp"
     handle: str | None = None
-    try:
-        info = await manychat_chan.fetch_subscriber_info(parsed["chat_id"])
-        if info:
-            handle = manychat_chan.derive_handle(subchannel, info)
-    except Exception as e:  # noqa: BLE001
-        log.warning("manychat_fetch_info_failed", error=str(e), chat_id=parsed["chat_id"])
+    # 1) Body del webhook (lo mas confiable cuando el flow incluye el campo).
+    handle = manychat_chan.derive_handle_from_payload(subchannel, body)
+    # 2) Si no, fetch a la API de ManyChat (best-effort).
+    if not handle:
+        try:
+            info = await manychat_chan.fetch_subscriber_info(parsed["chat_id"])
+            if info:
+                handle = manychat_chan.derive_handle(subchannel, info)
+                # Log diagnostico para ver que devuelve ManyChat realmente
+                log.info(
+                    "manychat_subscriber_info_ok",
+                    chat_id=parsed["chat_id"],
+                    fields_present=[
+                        k for k in ("phone", "whatsapp_phone", "name", "ig_username", "first_name")
+                        if info.get(k)
+                    ],
+                    handle_resolved=handle,
+                )
+        except Exception as e:  # noqa: BLE001
+            log.warning("manychat_fetch_info_failed", error=str(e), chat_id=parsed["chat_id"])
     try:
         await bot_settings.ensure_row(parsed["chat_id"], "manychat")
         await _ensure_canal(parsed["chat_id"], subchannel, handle=handle)

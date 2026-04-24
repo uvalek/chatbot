@@ -69,6 +69,42 @@ async def fetch_subscriber_phone(subscriber_id: str) -> str | None:
     return phone or None
 
 
+def _format_phone(raw: Any) -> str | None:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s or s.startswith("{{"):  # placeholder no resuelto
+        return None
+    digits = "".join(c for c in s if c.isdigit() or c == "+")
+    if not digits:
+        return None
+    if not digits.startswith("+"):
+        digits = "+" + digits.lstrip("0")
+    return digits if len(digits) >= 8 else None
+
+
+def derive_handle_from_payload(subchannel: str, body: dict[str, Any]) -> str | None:
+    """Intenta sacar el handle directo del body del webhook (mas confiable
+    que llamar getInfo, sobre todo para WA donde {{phone}} se resuelve en
+    el momento)."""
+    if not isinstance(body, dict):
+        return None
+    inner = body.get("body") if isinstance(body.get("body"), dict) else body
+    if subchannel == "whatsapp":
+        ph = _format_phone(
+            inner.get("phone")
+            or inner.get("whatsapp_phone")
+            or body.get("phone")
+            or body.get("whatsapp_phone")
+        )
+        return ph
+    if subchannel == "instagram":
+        ig = (inner.get("ig_username") or body.get("ig_username") or "").strip().lstrip("@")
+        if ig:
+            return f"@{ig}"
+    return None
+
+
 def derive_handle(subchannel: str, data: dict[str, Any]) -> str | None:
     """Construye el identificador legible para el dashboard segun canal.
 

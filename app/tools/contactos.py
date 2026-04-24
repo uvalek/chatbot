@@ -122,13 +122,18 @@ async def upsert_contacto(
     if canal:
         payload["canal"] = canal
 
+    # En WhatsApp el telefono es el mejor identificador legible para el dashboard.
+    # Si tenemos telefono, lo proponemos como handle; mas abajo solo lo escribimos
+    # cuando el handle existente este vacio (no pisamos lo que ya este puesto).
+    handle_candidate = telefono if (canal == "whatsapp" and telefono) else None
+
     # Upsert manual por correo (no hay unique constraint)
     if correo:
         existing = await asyncio.to_thread(
             lambda: (
                 supabase()
                 .table("contactos")
-                .select("id")
+                .select("id, handle")
                 .eq("correo", correo)
                 .limit(1)
                 .execute()
@@ -137,6 +142,8 @@ async def upsert_contacto(
         rows = existing.data or []
         if rows:
             cid = rows[0]["id"]
+            if handle_candidate and not (rows[0].get("handle") or "").strip():
+                payload["handle"] = handle_candidate
             res = await asyncio.to_thread(
                 lambda: (
                     supabase()
@@ -149,6 +156,8 @@ async def upsert_contacto(
             log.info("contacto_actualizado", id=cid, correo=correo, propiedad=propiedad_id)
             return (res.data or [{"id": cid}])[0]
 
+    if handle_candidate:
+        payload.setdefault("handle", handle_candidate)
     res = await asyncio.to_thread(
         lambda: supabase().table("contactos").insert(payload).execute()
     )
