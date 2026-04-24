@@ -29,11 +29,24 @@ def parse_update(update: dict[str, Any]) -> dict[str, Any] | None:
         return None
     chat = msg.get("chat") or {}
     chat_id = str(chat.get("id"))
+    sender = msg.get("from") or {}
+    # Identificador legible para el dashboard: @username o nombre real.
+    handle: str | None = None
+    uname = (sender.get("username") or "").strip().lstrip("@")
+    if uname:
+        handle = f"@{uname}"
+    else:
+        first = (sender.get("first_name") or "").strip()
+        last = (sender.get("last_name") or "").strip()
+        full = f"{first} {last}".strip()
+        if full:
+            handle = full
     out: dict[str, Any] = {
         "chat_id": chat_id,
         "text": None,
         "media_type": None,
         "media_file_id": None,
+        "handle": handle,
         "raw": msg,
     }
     if "text" in msg:

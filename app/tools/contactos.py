@@ -190,8 +190,8 @@ async def merge_lead_fields(
         for k, v in fields.items():
             if v not in (None, ""):
                 payload[k] = v
-        # nombre es obligatorio en algunas instalaciones; default al chat_id si no vino
-        payload.setdefault("nombre", fields.get("nombre") or chat_id)
+        # nombre ya es nullable; el dashboard cae en handle/chat_id como fallback.
+        # No metemos chat_id como nombre porque no es un nombre real.
         payload.setdefault("etapa_seguimiento", fields.get("etapa_seguimiento") or "nuevo")
         res = await asyncio.to_thread(
             lambda: supabase().table("contactos").insert(payload).execute()

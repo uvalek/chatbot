@@ -23,12 +23,14 @@ SEND_URL = "https://api.manychat.com/fb/sending/sendContent"
 SUBSCRIBER_INFO_URL = "https://api.manychat.com/fb/subscriber/getInfo"
 
 
-async def fetch_subscriber_phone(subscriber_id: str) -> str | None:
-    """Pide a la API de ManyChat el telefono real del suscriptor de WhatsApp.
+async def fetch_subscriber_info(subscriber_id: str) -> dict[str, Any] | None:
+    """Devuelve el dict crudo `data` de ManyChat (getInfo) o None.
 
-    Lo usamos cuando el placeholder `{{phone}}` del External Request llega sin
-    resolver (campo "Telefono" vacio en el perfil) o como literal. En WhatsApp
-    el numero esta siempre disponible como identificador del contacto.
+    Campos relevantes que solemos usar:
+      - whatsapp_phone / phone
+      - name, first_name, last_name
+      - ig_username (cuando ManyChat lo expone para subscribers de Instagram)
+      - profile_pic
     """
     settings = get_settings()
     token = settings.manychat_api_token
@@ -53,12 +55,52 @@ async def fetch_subscriber_phone(subscriber_id: str) -> str | None:
         return None
     if body.get("status") != "success":
         return None
-    data = body.get("data") or {}
-    # ManyChat devuelve `phone` (a veces sin `+`) y/o `whatsapp_phone`.
+    return body.get("data") or {}
+
+
+async def fetch_subscriber_phone(subscriber_id: str) -> str | None:
+    """Compat: devuelve solo el telefono del subscriber (WhatsApp)."""
+    data = await fetch_subscriber_info(subscriber_id)
+    if not data:
+        return None
     phone = data.get("whatsapp_phone") or data.get("phone")
     if phone and not str(phone).startswith("+"):
         phone = "+" + str(phone).lstrip("0")
     return phone or None
+
+
+def derive_handle(subchannel: str, data: dict[str, Any]) -> str | None:
+    """Construye el identificador legible para el dashboard segun canal.
+
+    WA: telefono E.164 (lo mas identificativo en B2C)
+    IG: @username si ManyChat lo expone, fallback al nombre completo
+    MSG/FB: nombre completo de la pagina de Facebook
+    """
+    if not isinstance(data, dict):
+        return None
+    if subchannel == "whatsapp":
+        phone = data.get("whatsapp_phone") or data.get("phone")
+        if phone:
+            phone = str(phone)
+            return phone if phone.startswith("+") else "+" + phone.lstrip("0")
+        # fallback a nombre si no hay phone
+        nm = (data.get("name") or "").strip()
+        return nm or None
+    if subchannel == "instagram":
+        ig = (data.get("ig_username") or "").strip().lstrip("@")
+        if ig:
+            return f"@{ig}"
+        nm = (data.get("name") or "").strip()
+        return nm or None
+    if subchannel == "messenger":
+        nm = (data.get("name") or "").strip()
+        if nm:
+            return nm
+        first = (data.get("first_name") or "").strip()
+        last = (data.get("last_name") or "").strip()
+        full = f"{first} {last}".strip()
+        return full or None
+    return None
 
 
 VALID_SUBCHANNELS = ("whatsapp", "instagram", "messenger")

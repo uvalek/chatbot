@@ -210,12 +210,15 @@ async def list_conversations(
         ch_internal = bs.get("channel") or co.get("canal") or "manychat"
         ch_visible = co.get("canal") or ("whatsapp" if ch_internal == "manychat" else ch_internal)
 
+        # Display name preference: nombre real (M2/asesor) > handle auto > chat_id.
+        display = co.get("nombre") or co.get("handle") or sid
         item = {
             "chat_id": sid,
             "channel": ch_visible,
             "channel_internal": ch_internal,
             "bot_enabled": bs.get("bot_enabled", True),
-            "name": co.get("nombre") or sid,
+            "name": display,
+            "handle": co.get("handle"),
             "telefono": co.get("telefono"),
             "correo": co.get("correo"),
             "etapa_seguimiento": co.get("etapa_seguimiento"),
@@ -235,7 +238,9 @@ async def list_conversations(
         s = search.lower()
         items = [
             i for i in items
-            if s in (i["name"] or "").lower() or s in (i.get("telefono") or "")
+            if s in (i["name"] or "").lower()
+            or s in (i.get("telefono") or "")
+            or s in (i.get("handle") or "").lower()
         ]
     if channel:
         items = [i for i in items if i["channel"] == channel]

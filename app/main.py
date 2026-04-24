@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -130,6 +131,13 @@ async def telegram_webhook(
         await _store_user_message(parsed["chat_id"], parsed["text"], parsed["media_type"])
         return {"status": "queued_no_bot"}
 
+    # Persiste canal + handle (telefono/@user/nombre) al primer mensaje.
+    try:
+        await bot_settings.ensure_row(parsed["chat_id"], "telegram")
+        await _ensure_canal(parsed["chat_id"], "telegram", handle=parsed.get("handle"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("telegram_persist_canal_failed", error=str(e), chat_id=parsed["chat_id"])
+
     await buffer.insert_message(
         chat_id=parsed["chat_id"],
         channel="telegram",
@@ -192,10 +200,20 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
 
     # Persiste el sub-canal visible (whatsapp/instagram/messenger) en
     # bot_settings y contactos.canal para que el dashboard lo etiquete bien.
+    # Tambien intenta resolver un "handle" identificable (telefono / nombre /
+    # @ig_username) llamando a ManyChat getInfo. Best-effort: si falla, no
+    # bloquea el flujo del bot.
     subchannel = parsed.get("subchannel") or "whatsapp"
+    handle: str | None = None
+    try:
+        info = await manychat_chan.fetch_subscriber_info(parsed["chat_id"])
+        if info:
+            handle = manychat_chan.derive_handle(subchannel, info)
+    except Exception as e:  # noqa: BLE001
+        log.warning("manychat_fetch_info_failed", error=str(e), chat_id=parsed["chat_id"])
     try:
         await bot_settings.ensure_row(parsed["chat_id"], "manychat")
-        await _ensure_canal(parsed["chat_id"], subchannel)
+        await _ensure_canal(parsed["chat_id"], subchannel, handle=handle)
     except Exception as e:  # noqa: BLE001
         log.warning("manychat_persist_canal_failed", error=str(e), chat_id=parsed["chat_id"])
 
@@ -218,15 +236,23 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     return {"status": "queued"}
 
 
-async def _ensure_canal(chat_id: str, canal: str) -> None:
-    """Escribe `contactos.canal` solo si la fila no existe o tiene canal vacio.
-    No pisa ediciones manuales del asesor."""
+async def _ensure_canal(chat_id: str, canal: str, handle: str | None = None) -> None:
+    """Asegura que la fila de `contactos` exista para esta conversacion.
+
+    - `canal`: el webhook es la fuente de verdad (no es editable desde el CRM),
+      asi que siempre se pisa con el ultimo valor recibido.
+    - `handle`: identificador legible auto-detectado por canal (telefono WA,
+      @ TG/IG, nombre FB). Solo se actualiza si la fila no lo tiene; el
+      usuario podria haber dado luego un dato mejor (su nombre real va a `nombre`
+      via el extractor M0).
+    - NO toca `nombre` (lo gestiona el extractor o el asesor manualmente).
+    """
     from app.db import supabase  # import local
     existing = await asyncio.to_thread(
         lambda: (
             supabase()
             .table("contactos")
-            .select("id, canal")
+            .select("id, canal, handle")
             .eq("chat_id", chat_id)
             .limit(1)
             .execute()
@@ -234,26 +260,30 @@ async def _ensure_canal(chat_id: str, canal: str) -> None:
     )
     rows = existing.data or []
     if not rows:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "canal": canal,
+            "etapa_seguimiento": "nuevo",
+        }
+        if handle:
+            payload["handle"] = handle
+        # nombre arranca como NULL — el dashboard caera en handle como fallback.
         await asyncio.to_thread(
-            lambda: supabase().table("contactos").insert({
-                "chat_id": chat_id,
-                "canal": canal,
-                "nombre": chat_id,
-                "etapa_seguimiento": "nuevo",
-            }).execute()
+            lambda: supabase().table("contactos").insert(payload).execute()
         )
         return
     row = rows[0]
-    # El canal no es editable desde el dashboard, asi que el webhook es la
-    # fuente de verdad: si llega un canal distinto al guardado, lo pisamos.
-    # Esto repara conversaciones que se crearon antes de que mandaramos
-    # ?channel=... y quedaron con el default whatsapp.
+    update: dict[str, Any] = {}
     if row.get("canal") != canal:
+        update["canal"] = canal
+    if handle and not row.get("handle"):
+        update["handle"] = handle
+    if update:
         await asyncio.to_thread(
             lambda: (
                 supabase()
                 .table("contactos")
-                .update({"canal": canal})
+                .update(update)
                 .eq("id", row["id"])
                 .execute()
             )

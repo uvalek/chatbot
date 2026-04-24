@@ -52,6 +52,10 @@ _TOOLS = [
                         "type": "string",
                         "description": "Nombre o zona de la propiedad como fallback si no tienes el ID. El servidor resolverá el ID por similitud.",
                     },
+                    "userPhone": {
+                        "type": "string",
+                        "description": "Telefono del usuario en formato E.164 (ej: +5215512345678). OBLIGATORIO en Telegram, Instagram y Messenger porque no lo tenemos automatico. En WhatsApp omitelo.",
+                    },
                 },
                 "required": [
                     "startTime",
@@ -116,6 +120,39 @@ async def _cambio_cita(args: dict, user_phone: str) -> dict:
     return {"status": "cancelled", "raw": result}
 
 
+_PHONE_INSTRUCTION_STEP_AUTO = (
+    "\nNO pidas número de teléfono. Ya lo tenemos registrado automáticamente desde WhatsApp."
+)
+_PHONE_INSTRUCTION_RULE_AUTO = (
+    "- NUNCA pidas número de teléfono, ya lo tenemos desde WhatsApp"
+)
+_PHONE_INSTRUCTION_STEP_ASK = (
+    "\n3. Número de teléfono celular en formato internacional (ej: +52 55 1234 5678).\n"
+    "   Es OBLIGATORIO porque en este canal no lo tenemos automáticamente y el asesor "
+    "necesita poder contactar al usuario para confirmar la visita."
+)
+_PHONE_INSTRUCTION_RULE_ASK = (
+    "- SIEMPRE pide el número de teléfono celular en este canal y pásalo a "
+    "book_appointment como `userPhone` en formato E.164 (ej: +5215512345678).\n"
+    "- Si el usuario te da un número sin lada, asume México (+52) y agrégalo.\n"
+    "- Valida que tenga 10 dígitos despues del prefijo del pais; si no, vuelve a pedirlo."
+)
+
+
+def _build_system(canal: str) -> str:
+    """Inyecta las instrucciones de teléfono según el canal del usuario."""
+    base = _SYSTEM.replace("{{NOW_CDMX}}", _now_cdmx())
+    if canal == "whatsapp":
+        step = _PHONE_INSTRUCTION_STEP_AUTO
+        rule = _PHONE_INSTRUCTION_RULE_AUTO
+    else:  # telegram, instagram, messenger
+        step = _PHONE_INSTRUCTION_STEP_ASK
+        rule = _PHONE_INSTRUCTION_RULE_ASK
+    return base.replace("{{PHONE_INSTRUCTION_STEP}}", step).replace(
+        "{{PHONE_INSTRUCTION_RULE}}", rule
+    )
+
+
 async def respond(
     user_text: str,
     history: list[dict[str, str]],
@@ -125,7 +162,7 @@ async def respond(
     canal: str = "",
 ) -> str:
     s = get_settings()
-    system = _SYSTEM.replace("{{NOW_CDMX}}", _now_cdmx())
+    system = _build_system(canal)
     msgs: list[dict] = [{"role": "system", "content": system}]
     msgs.extend(history[-15:])
     msgs.append({"role": "user", "content": user_text})
@@ -153,17 +190,21 @@ async def respond(
                 if name == "consultar_disponibilidad":
                     result = await cal.get_slots(args["startTime"], args["endTime"])
                 elif name == "book_appointment":
+                    # Telefono efectivo: el del canal (WA) > el que pidio el LLM (TG/IG/MSG).
+                    effective_phone = user_phone or (
+                        cal._normalize_phone(args.get("userPhone")) or ""
+                    )
                     booking = await cal.book(
                         start_time=args["startTime"],
                         user_name=args["userName"],
                         user_email=args["userEmail"],
-                        user_phone=user_phone,
+                        user_phone=effective_phone,
                     )
                     try:
                         await contactos.upsert_contacto(
                             nombre=args["userName"],
                             correo=args["userEmail"],
-                            telefono=user_phone or None,
+                            telefono=effective_phone or None,
                             zona_interes=args.get("zona_interes") or None,
                             presupuesto_max=args.get("presupuesto_max"),
                             tipo_credito=args.get("tipo_credito") or None,
