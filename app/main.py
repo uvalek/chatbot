@@ -92,6 +92,17 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# Version "marker" hardcoded — se actualiza con cada feature releveante para
+# poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
+# cambio que necesite confirmacion en produccion.
+_VERSION = "v3-handle-and-phone-2026-04-24"
+
+
+@app.get("/version")
+async def version() -> dict[str, str]:
+    return {"version": _VERSION}
+
+
 @app.get("/admin/reap")
 async def admin_reap(token: str | None = None) -> dict[str, object]:
     """Fuerza una pasada del reaper. Util para diagnostico cuando un mensaje
