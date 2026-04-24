@@ -244,7 +244,11 @@ async def _ensure_canal(chat_id: str, canal: str) -> None:
         )
         return
     row = rows[0]
-    if row.get("canal") in (None, ""):
+    # El canal no es editable desde el dashboard, asi que el webhook es la
+    # fuente de verdad: si llega un canal distinto al guardado, lo pisamos.
+    # Esto repara conversaciones que se crearon antes de que mandaramos
+    # ?channel=... y quedaron con el default whatsapp.
+    if row.get("canal") != canal:
         await asyncio.to_thread(
             lambda: (
                 supabase()
