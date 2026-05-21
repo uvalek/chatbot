@@ -28,7 +28,7 @@ for noisy in ("httpx", "httpcore", "openai._base_client"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
 log = structlog.get_logger(__name__)
 
-app = FastAPI(title="Chatbot Home Plus")
+app = FastAPI(title="Chatbot Luce Real Estate")
 
 # CORS: permite al dashboard (Vercel + localhost dev) consumir /api/*
 _origins = [o.strip() for o in settings.dashboard_cors_origins.split(",") if o.strip()]
@@ -96,7 +96,7 @@ async def health() -> dict[str, str]:
 # Version "marker" hardcoded — se actualiza con cada feature releveante para
 # poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
 # cambio que necesite confirmacion en produccion.
-_VERSION = "v6-fotos-render-2026-05-21"
+_VERSION = "v7-rebrand-luce-2026-05-21"
 
 
 @app.get("/version")

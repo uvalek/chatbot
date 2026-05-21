@@ -18,7 +18,7 @@ _TOOLS = [
         "function": {
             "name": "buscar_propiedades",
             "description": (
-                "Busca propiedades en el catálogo Home Plus. "
+                "Busca propiedades en el catálogo Luce Real Estate. "
                 "Acepta un único parámetro 'busqueda' con palabras clave."
             ),
             "parameters": {
