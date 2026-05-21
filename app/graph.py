@@ -26,8 +26,8 @@ log = structlog.get_logger(__name__)
 
 class ChatState(TypedDict, total=False):
     chat_id: str
-    channel: Literal["telegram", "manychat"]
-    subchannel: Literal["whatsapp", "instagram", "messenger", "telegram"]
+    channel: Literal["telegram", "manychat", "webchat"]
+    subchannel: Literal["whatsapp", "instagram", "messenger", "telegram", "webchat"]
     raw_messages: list[dict[str, Any]]
     user_text: str
     user_phone: str
@@ -111,9 +111,11 @@ async def _send(state: ChatState) -> dict[str, Any]:
     chunks = state.get("chunks") or []
     if state["channel"] == "telegram":
         await telegram_chan.send_messages(state["chat_id"], chunks)
-    else:
+    elif state["channel"] == "manychat":
         sub = state.get("subchannel") or "whatsapp"
         await manychat_chan.send_messages(state["chat_id"], chunks, subchannel=sub)
+    # webchat: no hay envio saliente; la respuesta vuelve en el HTTP response
+    # sincronico (ver dispatch_webchat).
     return {}
 
 
@@ -232,3 +234,22 @@ async def dispatch(chat_id: str, channel: str, messages: list[dict[str, Any]]) -
         "user_phone": user_phone,
     }
     await graph().ainvoke(state)
+
+
+async def dispatch_webchat(chat_id: str, text: str) -> list[str]:
+    """Punto de entrada SINCRONO para el widget de chat web.
+
+    A diferencia de Telegram/ManyChat (asincronos: el webhook responde y el
+    bot envia luego), aqui el usuario espera la respuesta en el mismo request.
+    Corremos el grafo y devolvemos los `chunks` directamente; el nodo `send`
+    es un no-op para el canal `webchat`.
+    """
+    state: ChatState = {
+        "chat_id": chat_id,
+        "channel": "webchat",  # type: ignore[typeddict-item]
+        "subchannel": "webchat",  # type: ignore[typeddict-item]
+        "raw_messages": [{"text": text}],
+        "user_phone": "",
+    }
+    result = await graph().ainvoke(state)
+    return result.get("chunks") or []

@@ -16,7 +16,8 @@ from app import bot_settings, buffer, memory, test_mode
 from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app.config import get_settings
-from app.graph import dispatch
+from app.graph import dispatch, dispatch_webchat
+from pydantic import BaseModel
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
@@ -95,7 +96,7 @@ async def health() -> dict[str, str]:
 # Version "marker" hardcoded — se actualiza con cada feature releveante para
 # poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
 # cambio que necesite confirmacion en produccion.
-_VERSION = "v4-wa-handle-fix-2026-04-24"
+_VERSION = "v5-webchat-2026-04-24"
 
 
 @app.get("/version")
@@ -560,3 +561,32 @@ async def panel() -> HTMLResponse:
     """Panel visual para activar/desactivar el bot. El token se guarda en
     localStorage del navegador; el server nunca lo loguea ni lo expone."""
     return HTMLResponse(_PANEL_HTML)
+
+
+# ---------------------------------------------------------------------------
+# Chat web (widget en la pagina). Canal SINCRONO: el navegador manda el texto
+# y espera la respuesta en el mismo request, sin buffer ni envio saliente.
+# ---------------------------------------------------------------------------
+
+
+class WebchatIn(BaseModel):
+    chat_id: str
+    text: str
+
+
+@app.post("/api/webchat")
+async def webchat(payload: WebchatIn) -> dict[str, Any]:
+    chat_id = (payload.chat_id or "").strip()
+    text = (payload.text or "").strip()
+    if not chat_id or not text:
+        raise HTTPException(status_code=400, detail="chat_id y text son obligatorios")
+    if len(text) > 2000:
+        text = text[:2000]
+    log.info("webchat_in", chat_id=chat_id, text_len=len(text))
+    try:
+        chunks = await dispatch_webchat(chat_id, text)
+    except Exception as e:  # noqa: BLE001
+        log.exception("webchat_failed", chat_id=chat_id, error=str(e))
+        raise HTTPException(status_code=500, detail="error procesando el mensaje")
+    log.info("webchat_out", chat_id=chat_id, chunks=len(chunks))
+    return {"chunks": chunks}
