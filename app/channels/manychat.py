@@ -15,7 +15,9 @@ from typing import Any
 import httpx
 import structlog
 
+from app import media_render
 from app.config import get_settings
+from app.tools import shortlinks
 
 log = structlog.get_logger(__name__)
 
@@ -189,6 +191,64 @@ def parse_webhook(body: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+async def _convert_links(text: str) -> str:
+    """Reemplaza los enlaces Markdown [texto](url) por "texto: <link corto>".
+
+    ManyChat no soporta hipervínculos, así que en vez de la palabra azul
+    ponemos la etiqueta seguida de una URL acortada (corta y clicable por
+    el auto-link del propio WhatsApp/IG/Messenger).
+    """
+    links = media_render.iter_links(text)
+    if not links:
+        return text
+    # Acorta cada URL única una sola vez.
+    short_map: dict[str, str] = {}
+    for _label, url in links:
+        if url not in short_map:
+            short_map[url] = await shortlinks.shorten(url)
+
+    def _repl(m: Any) -> str:
+        label = m.group(1).strip()
+        url = m.group(2).strip()
+        return f"{label}: {short_map.get(url, url)}"
+
+    return media_render.MD_LINK.sub(_repl, text)
+
+
+async def _post_content(
+    http: httpx.AsyncClient,
+    chat_id: str,
+    sub: str,
+    message: dict[str, Any],
+) -> None:
+    payload = {
+        "subscriber_id": chat_id,
+        "data": {
+            "version": "v2",
+            "content": {"type": sub, "messages": [message]},
+        },
+    }
+    try:
+        r = await http.post(SEND_URL, json=payload)
+        if r.status_code >= 300:
+            log.error(
+                "manychat_send_error",
+                status=r.status_code,
+                body=r.text[:500],
+                chat_id=chat_id,
+                msg_type=message.get("type"),
+            )
+        else:
+            log.info(
+                "manychat_sent",
+                chat_id=chat_id,
+                subchannel=sub,
+                msg_type=message.get("type"),
+            )
+    except Exception as e:  # noqa: BLE001
+        log.exception("manychat_send_exception", error=str(e), chat_id=chat_id)
+
+
 async def send_messages(
     chat_id: str,
     chunks: list[str],
@@ -197,6 +257,9 @@ async def send_messages(
     """Envia mensajes via ManyChat. `subchannel` define el `content.type`:
     whatsapp | instagram | messenger. Cada uno usa el endpoint del canal
     conectado al subscriber en ManyChat.
+
+    Las fotos principales (![alt](url)) se mandan como mensaje de imagen;
+    los enlaces [texto](url) se acortan a "texto: <link corto>".
     """
     settings = get_settings()
     token = settings.manychat_api_token
@@ -206,35 +269,14 @@ async def send_messages(
     sub = subchannel if subchannel in VALID_SUBCHANNELS else "whatsapp"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=20, headers=headers) as http:
-        for i, text in enumerate(chunks):
-            payload = {
-                "subscriber_id": chat_id,
-                "data": {
-                    "version": "v2",
-                    "content": {
-                        "type": sub,
-                        "messages": [{"type": "text", "text": text}],
-                    },
-                },
-            }
-            try:
-                r = await http.post(SEND_URL, json=payload)
-                if r.status_code >= 300:
-                    log.error(
-                        "manychat_send_error",
-                        status=r.status_code,
-                        body=r.text[:500],
-                        chat_id=chat_id,
-                    )
-                else:
-                    log.info(
-                        "manychat_sent",
-                        chat_id=chat_id,
-                        chunk=i + 1,
-                        total=len(chunks),
-                        subchannel=sub,
-                    )
-            except Exception as e:  # noqa: BLE001
-                log.exception("manychat_send_exception", error=str(e), chat_id=chat_id)
+        for i, raw in enumerate(chunks):
+            text, images = media_render.extract_images(raw)
+            text = await _convert_links(text)
+
+            if text.strip():
+                await _post_content(http, chat_id, sub, {"type": "text", "text": text})
+            for _alt, url in images:
+                await _post_content(http, chat_id, sub, {"type": "image", "url": url})
+
             if i < len(chunks) - 1:
                 await asyncio.sleep(settings.send_delay_seconds)

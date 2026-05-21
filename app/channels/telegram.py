@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from app import media_render
 from app.config import get_settings
 
 API = "https://api.telegram.org/bot{token}"
@@ -84,17 +85,41 @@ async def send_messages(chat_id: str, chunks: list[str]) -> None:
     if not chunks:
         return
     async with httpx.AsyncClient(timeout=20) as http:
-        for i, text in enumerate(chunks):
-            try:
+        for i, raw in enumerate(chunks):
+            # Las fotos principales vienen como ![alt](url): se mandan como
+            # sendPhoto. Los enlaces [texto](url) se quedan en el texto y
+            # parse_mode=Markdown los vuelve clicables (palabra azul).
+            text, images = media_render.extract_images(raw)
+
+            if text.strip():
+                try:
+                    await http.post(
+                        _api("/sendChatAction"),
+                        json={"chat_id": chat_id, "action": "typing"},
+                    )
+                except httpx.HTTPError:
+                    pass
                 await http.post(
-                    _api("/sendChatAction"),
-                    json={"chat_id": chat_id, "action": "typing"},
+                    _api("/sendMessage"),
+                    json={
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "Markdown",
+                    },
                 )
-            except httpx.HTTPError:
-                pass
-            await http.post(
-                _api("/sendMessage"),
-                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
-            )
+
+            for alt, url in images:
+                try:
+                    await http.post(
+                        _api("/sendPhoto"),
+                        json={
+                            "chat_id": chat_id,
+                            "photo": url,
+                            "caption": alt or None,
+                        },
+                    )
+                except httpx.HTTPError:
+                    pass
+
             if i < len(chunks) - 1:
                 await asyncio.sleep(settings.send_delay_seconds)
