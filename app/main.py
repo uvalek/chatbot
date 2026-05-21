@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from app import api as dashboard_api
-from app import bot_settings, buffer, memory, test_mode
+from app import bot_settings, buffer, channel_flags, memory
 from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app.config import get_settings
@@ -96,7 +96,7 @@ async def health() -> dict[str, str]:
 # Version "marker" hardcoded — se actualiza con cada feature releveante para
 # poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
 # cambio que necesite confirmacion en produccion.
-_VERSION = "v7-rebrand-luce-2026-05-21"
+_VERSION = "v8-channel-toggles-2026-05-21"
 
 
 @app.get("/version")
@@ -128,6 +128,11 @@ async def telegram_webhook(
     parsed = telegram_chan.parse_update(update)
     if not parsed:
         return {"status": "ignored"}
+
+    # Interruptor global del canal Telegram (panel /panel).
+    if not await channel_flags.is_enabled("telegram"):
+        log.info("telegram_channel_off", chat_id=parsed["chat_id"])
+        return {"status": "channel_off"}
 
     media_url = None
     if parsed["media_file_id"]:
@@ -164,10 +169,6 @@ async def telegram_webhook(
 
 @app.api_route("/webhook/manychat", methods=["GET", "POST"])
 async def manychat_webhook(request: Request) -> dict[str, str]:
-    if settings.manychat_require_arm and not test_mode.is_armed_manychat():
-        log.info("manychat_ignored_disarmed", method=request.method)
-        return {"status": "disarmed"}
-
     if request.method == "GET":
         # ManyChat (plan básico) solo permite GET con query params
         body = dict(request.query_params)
@@ -204,6 +205,12 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
         media_type=parsed.get("media_type"),
     )
 
+    # Interruptor global del sub-canal (whatsapp/instagram/messenger) — panel /panel.
+    subchannel = parsed.get("subchannel") or "whatsapp"
+    if not await channel_flags.is_enabled(subchannel):
+        log.info("manychat_channel_off", chat_id=parsed["chat_id"], subchannel=subchannel)
+        return {"status": "channel_off"}
+
     # Toggle per-conversacion (ver telegram_webhook).
     if not await bot_settings.is_enabled(parsed["chat_id"]):
         log.info("manychat_queued_no_bot", chat_id=parsed["chat_id"])
@@ -215,7 +222,6 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     # Tambien intenta resolver un "handle" identificable (telefono / nombre /
     # @ig_username) llamando a ManyChat getInfo. Best-effort: si falla, no
     # bloquea el flujo del bot.
-    subchannel = parsed.get("subchannel") or "whatsapp"
     handle: str | None = None
     # 1) Body del webhook (lo mas confiable cuando el flow incluye el campo).
     handle = manychat_chan.derive_handle_from_payload(subchannel, body)
@@ -258,7 +264,6 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
         media_url=parsed["media_url"],
     )
     _spawn(buffer.schedule_flush(parsed["chat_id"], "manychat", dispatch))
-    test_mode.consume_manychat()
     return {"status": "queued"}
 
 
@@ -341,27 +346,30 @@ def _check_token(token: str | None) -> None:
         raise HTTPException(status_code=403, detail="invalid token")
 
 
-@app.api_route("/test/manychat/arm", methods=["GET", "POST"])
-async def manychat_arm(
+# ---------------------------------------------------------------------------
+# Interruptores de canal. El panel /panel los maneja con el mismo token.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/admin/channels")
+async def admin_channels_get(token: str | None = None) -> dict[str, Any]:
+    _check_token(token)
+    return {"flags": await channel_flags.all_flags(force=True)}
+
+
+@app.api_route("/admin/channels", methods=["POST"])
+async def admin_channels_set(
     token: str | None = None,
-    seconds: int = 600,
-    one_shot: bool = True,
-) -> dict[str, object]:
+    channel: str | None = None,
+    enabled: bool | None = None,
+) -> dict[str, Any]:
     _check_token(token)
-    return test_mode.arm_manychat(seconds=seconds, one_shot=one_shot)
-
-
-@app.api_route("/test/manychat/disarm", methods=["GET", "POST"])
-async def manychat_disarm(token: str | None = None) -> dict[str, str]:
-    _check_token(token)
-    test_mode.disarm_manychat()
-    return {"status": "disarmed"}
-
-
-@app.get("/test/manychat/status")
-async def manychat_status(token: str | None = None) -> dict[str, object]:
-    _check_token(token)
-    return test_mode.status_manychat()
+    if channel not in channel_flags.CHANNELS:
+        raise HTTPException(status_code=400, detail=f"canal inválido: {channel}")
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="falta el parámetro enabled")
+    flags = await channel_flags.set_enabled(channel, enabled)
+    return {"flags": flags}
 
 
 # Panel HTML autosuficiente: un solo archivo, sin build, sin frontend separado.
@@ -371,7 +379,7 @@ _PANEL_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Panel Bot WhatsApp</title>
+<title>Panel del Bot — Canales</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
@@ -382,136 +390,100 @@ _PANEL_HTML = """<!doctype html>
   }
   .card {
     background: #1e293b; border-radius: 16px; padding: 32px;
-    width: 100%; max-width: 420px;
+    width: 100%; max-width: 440px;
     box-shadow: 0 20px 60px rgba(0,0,0,.4);
   }
   h1 { margin: 0 0 4px; font-size: 22px; }
-  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 24px; }
-  .status {
-    display: flex; align-items: center; gap: 12px;
-    padding: 16px; border-radius: 12px; margin-bottom: 20px;
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 22px; }
+  .ch {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px; border-radius: 12px; margin-bottom: 10px;
     background: #0f172a; border: 1px solid #334155;
   }
-  .dot { width: 14px; height: 14px; border-radius: 50%; background: #475569; transition: background .2s; }
-  .dot.on { background: #22c55e; box-shadow: 0 0 12px #22c55e; }
-  .status-text { font-weight: 600; }
-  .meta { color: #94a3b8; font-size: 12px; margin-top: 2px; }
-  button {
-    width: 100%; padding: 16px; font-size: 16px; font-weight: 700;
-    border: 0; border-radius: 12px; cursor: pointer;
-    transition: transform .05s, opacity .15s;
-    color: #fff;
+  .ch .ico { font-size: 20px; width: 26px; text-align: center; }
+  .ch .name { flex: 1; }
+  .ch .name b { font-size: 15px; }
+  .ch .name .st { display: block; font-size: 11px; color: #94a3b8; margin-top: 2px; }
+  /* switch */
+  .sw {
+    position: relative; width: 52px; height: 30px; flex: 0 0 auto;
+    border-radius: 999px; background: #475569; cursor: pointer;
+    transition: background .18s; border: 0; padding: 0;
   }
-  button:active { transform: scale(.98); }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  .btn-on { background: #22c55e; }
-  .btn-off { background: #ef4444; }
-  label { display: block; font-size: 12px; color: #94a3b8; margin: 16px 0 6px; }
-  input, select {
+  .sw.on { background: #22c55e; }
+  .sw:disabled { opacity: .45; cursor: not-allowed; }
+  .sw .knob {
+    position: absolute; top: 3px; left: 3px; width: 24px; height: 24px;
+    border-radius: 50%; background: #fff; transition: transform .18s;
+  }
+  .sw.on .knob { transform: translateX(22px); }
+  label { display: block; font-size: 12px; color: #94a3b8; margin: 18px 0 6px; }
+  input {
     width: 100%; padding: 10px 12px; border-radius: 8px;
     border: 1px solid #334155; background: #0f172a; color: #e2e8f0;
     font-size: 14px;
   }
-  .row { display: flex; gap: 8px; }
-  .row > * { flex: 1; }
-  .msg { font-size: 12px; margin-top: 12px; min-height: 16px; }
+  .msg { font-size: 12px; margin-top: 14px; min-height: 16px; }
   .msg.err { color: #f87171; }
   .msg.ok { color: #4ade80; }
-  .footer { text-align: center; font-size: 11px; color: #64748b; margin-top: 18px; }
+  .footer { text-align: center; font-size: 11px; color: #64748b; margin-top: 16px; }
 </style>
 </head>
 <body>
   <div class="card">
-    <h1>Bot WhatsApp</h1>
-    <div class="sub">Activa el bot solo cuando vayas a probarlo.</div>
+    <h1>Canales del bot</h1>
+    <div class="sub">Enciende o apaga el bot en cada canal. El cambio es inmediato.</div>
 
-    <div class="status">
-      <div class="dot" id="dot"></div>
-      <div>
-        <div class="status-text" id="statusText">Cargando...</div>
-        <div class="meta" id="meta"></div>
-      </div>
-    </div>
-
-    <button id="toggle" disabled>—</button>
+    <div id="channels"></div>
 
     <label for="token">Token</label>
     <input id="token" type="password" placeholder="TEST_ARM_TOKEN" autocomplete="off" />
 
-    <div class="row">
-      <div>
-        <label for="seconds">Duración</label>
-        <select id="seconds">
-          <option value="300">5 min</option>
-          <option value="600" selected>10 min</option>
-          <option value="1800">30 min</option>
-          <option value="3600">1 hora</option>
-        </select>
-      </div>
-      <div>
-        <label for="mode">Modo</label>
-        <select id="mode">
-          <option value="true" selected>Un mensaje</option>
-          <option value="false">Ventana</option>
-        </select>
-      </div>
-    </div>
-
     <div class="msg" id="msg"></div>
-    <div class="footer">Estado se refresca cada 5 s</div>
+    <div class="footer">Se refresca cada 10 s</div>
   </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const tokenEl = $("token");
-const btn = $("toggle");
-const dot = $("dot");
-const statusText = $("statusText");
-const meta = $("meta");
 const msg = $("msg");
+const channelsEl = $("channels");
+
+const CHANNELS = [
+  { id: "webchat",   ico: "\\uD83D\\uDCBB", label: "Sitio web" },
+  { id: "telegram",  ico: "\\u2708\\uFE0F", label: "Telegram" },
+  { id: "whatsapp",  ico: "\\uD83D\\uDCAC", label: "WhatsApp" },
+  { id: "instagram", ico: "\\uD83D\\uDCF7", label: "Instagram" },
+  { id: "messenger", ico: "\\uD83D\\uDCE8", label: "Messenger" },
+];
 
 tokenEl.value = localStorage.getItem("bot_token") || "";
 tokenEl.addEventListener("input", () => localStorage.setItem("bot_token", tokenEl.value));
 
-let state = { armed: false, remaining_seconds: 0, one_shot: true };
+let flags = {};
+let busy = false;
 
 function render() {
-  if (state.armed) {
-    dot.classList.add("on");
-    statusText.textContent = "ACTIVO";
-    const m = Math.floor(state.remaining_seconds / 60);
-    const s = state.remaining_seconds % 60;
-    meta.textContent = `Modo: ${state.one_shot ? "un mensaje" : "ventana"} · ${m}m ${s}s restantes`;
-    btn.textContent = "Desactivar bot";
-    btn.className = "btn-off";
-  } else {
-    dot.classList.remove("on");
-    statusText.textContent = "INACTIVO";
-    meta.textContent = "El bot ignora todos los mensajes.";
-    btn.textContent = "Activar bot";
-    btn.className = "btn-on";
+  const hasToken = !!tokenEl.value.trim();
+  channelsEl.innerHTML = "";
+  for (const c of CHANNELS) {
+    const on = !!flags[c.id];
+    const row = document.createElement("div");
+    row.className = "ch";
+    row.innerHTML = `
+      <div class="ico">${c.ico}</div>
+      <div class="name">
+        <b>${c.label}</b>
+        <span class="st">${on ? "Encendido" : "Apagado"}</span>
+      </div>
+      <button class="sw ${on ? "on" : ""}" data-ch="${c.id}" ${hasToken && !busy ? "" : "disabled"}>
+        <span class="knob"></span>
+      </button>`;
+    channelsEl.appendChild(row);
   }
-  btn.disabled = !tokenEl.value;
-}
-
-async function call(path, params = {}) {
-  const t = tokenEl.value.trim();
-  if (!t) { showMsg("Falta token", true); return null; }
-  const url = new URL(path, window.location.origin);
-  url.searchParams.set("token", t);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  try {
-    const r = await fetch(url, { method: "POST" });
-    if (!r.ok) {
-      const txt = await r.text();
-      showMsg(`Error ${r.status}: ${txt.slice(0, 120)}`, true);
-      return null;
-    }
-    return await r.json();
-  } catch (e) {
-    showMsg("Error de red: " + e.message, true);
-    return null;
-  }
+  channelsEl.querySelectorAll(".sw").forEach((b) => {
+    b.addEventListener("click", () => toggle(b.dataset.ch));
+  });
 }
 
 function showMsg(text, isErr = false) {
@@ -522,34 +494,45 @@ function showMsg(text, isErr = false) {
 
 async function refresh() {
   const t = tokenEl.value.trim();
-  if (!t) { btn.disabled = true; return; }
-  const url = `/test/manychat/status?token=${encodeURIComponent(t)}`;
+  if (!t) { flags = {}; render(); return; }
   try {
-    const r = await fetch(url);
-    if (!r.ok) return;
-    state = await r.json();
+    const r = await fetch(`/admin/channels?token=${encodeURIComponent(t)}`);
+    if (!r.ok) { showMsg(`Error ${r.status}`, true); return; }
+    const data = await r.json();
+    flags = data.flags || {};
     render();
-  } catch (_) {}
+  } catch (e) { showMsg("Error de red: " + e.message, true); }
 }
 
-btn.addEventListener("click", async () => {
-  btn.disabled = true;
-  if (state.armed) {
-    const r = await call("/test/manychat/disarm");
-    if (r) showMsg("Bot desactivado", false);
-  } else {
-    const r = await call("/test/manychat/arm", {
-      seconds: $("seconds").value,
-      one_shot: $("mode").value,
-    });
-    if (r) showMsg("Bot activado", false);
+async function toggle(ch) {
+  const t = tokenEl.value.trim();
+  if (!t || busy) return;
+  busy = true; render();
+  const next = !flags[ch];
+  const url = new URL("/admin/channels", window.location.origin);
+  url.searchParams.set("token", t);
+  url.searchParams.set("channel", ch);
+  url.searchParams.set("enabled", next ? "true" : "false");
+  try {
+    const r = await fetch(url, { method: "POST" });
+    if (!r.ok) {
+      const txt = await r.text();
+      showMsg(`Error ${r.status}: ${txt.slice(0, 120)}`, true);
+    } else {
+      const data = await r.json();
+      flags = data.flags || flags;
+      showMsg(`${ch}: ${next ? "encendido" : "apagado"}`, false);
+    }
+  } catch (e) {
+    showMsg("Error de red: " + e.message, true);
   }
-  await refresh();
-});
+  busy = false; render();
+}
 
 tokenEl.addEventListener("change", refresh);
+render();
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, 10000);
 </script>
 </body>
 </html>
@@ -558,8 +541,8 @@ setInterval(refresh, 5000);
 
 @app.get("/panel", response_class=HTMLResponse)
 async def panel() -> HTMLResponse:
-    """Panel visual para activar/desactivar el bot. El token se guarda en
-    localStorage del navegador; el server nunca lo loguea ni lo expone."""
+    """Panel visual para encender/apagar el bot por canal. El token se guarda
+    en localStorage del navegador; el server nunca lo loguea ni lo expone."""
     return HTMLResponse(_PANEL_HTML)
 
 
@@ -582,6 +565,10 @@ async def webchat(payload: WebchatIn) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="chat_id y text son obligatorios")
     if len(text) > 2000:
         text = text[:2000]
+    # Interruptor global del canal web (panel /panel).
+    if not await channel_flags.is_enabled("webchat"):
+        log.info("webchat_channel_off", chat_id=chat_id)
+        return {"chunks": ["El asistente no está disponible en este momento."]}
     log.info("webchat_in", chat_id=chat_id, text_len=len(text))
     try:
         chunks = await dispatch_webchat(chat_id, text)
