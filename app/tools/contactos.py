@@ -69,6 +69,24 @@ async def _resolve_propiedad_id(
     return None
 
 
+async def _fetch_propiedad_geo(propiedad_id: int) -> tuple[str | None, str | None]:
+    """Devuelve (estado, municipio) de una propiedad. None si no existe."""
+    res = await asyncio.to_thread(
+        lambda: (
+            supabase()
+            .table("propiedades")
+            .select("estado, municipio")
+            .eq("id", propiedad_id)
+            .limit(1)
+            .execute()
+        )
+    )
+    rows = res.data or []
+    if not rows:
+        return None, None
+    return rows[0].get("estado"), rows[0].get("municipio")
+
+
 def _to_float(v: Any) -> float | None:
     if v is None or v == "":
         return None
@@ -96,6 +114,13 @@ async def upsert_contacto(
     propiedad_id = await _resolve_propiedad_id(
         propiedad_interesada_id, propiedad_interesada_nombre
     )
+
+    # Geo de la propiedad para copiarla al contacto: el dashboard puede
+    # filtrar leads por estado/municipio sin tener que joinear con propiedades.
+    prop_estado: str | None = None
+    prop_municipio: str | None = None
+    if propiedad_id is not None:
+        prop_estado, prop_municipio = await _fetch_propiedad_geo(propiedad_id)
 
     payload: dict[str, Any] = {
         "nombre": nombre,
@@ -133,7 +158,7 @@ async def upsert_contacto(
             lambda: (
                 supabase()
                 .table("contactos")
-                .select("id, handle")
+                .select("id, handle, estado, municipio")
                 .eq("correo", correo)
                 .limit(1)
                 .execute()
@@ -144,6 +169,12 @@ async def upsert_contacto(
             cid = rows[0]["id"]
             if handle_candidate and not (rows[0].get("handle") or "").strip():
                 payload["handle"] = handle_candidate
+            # Estado/municipio: solo escribimos si la fila no los tiene,
+            # para no pisar lo que el asesor haya editado a mano.
+            if prop_estado and not (rows[0].get("estado") or "").strip():
+                payload["estado"] = prop_estado
+            if prop_municipio and not (rows[0].get("municipio") or "").strip():
+                payload["municipio"] = prop_municipio
             res = await asyncio.to_thread(
                 lambda: (
                     supabase()
@@ -158,6 +189,10 @@ async def upsert_contacto(
 
     if handle_candidate:
         payload.setdefault("handle", handle_candidate)
+    if prop_estado:
+        payload.setdefault("estado", prop_estado)
+    if prop_municipio:
+        payload.setdefault("municipio", prop_municipio)
     res = await asyncio.to_thread(
         lambda: supabase().table("contactos").insert(payload).execute()
     )

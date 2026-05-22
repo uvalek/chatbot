@@ -96,7 +96,7 @@ async def health() -> dict[str, str]:
 # Version "marker" hardcoded — se actualiza con cada feature releveante para
 # poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
 # cambio que necesite confirmacion en produccion.
-_VERSION = "v11-lada-y-ampm-2026-05-22"
+_VERSION = "v12-contactos-geo-2026-05-22"
 
 
 @app.get("/version")
