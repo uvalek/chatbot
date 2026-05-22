@@ -90,8 +90,10 @@ def _normalize_phone(raw: str | None) -> str | None:
 
     - Quita espacios, guiones, parentesis.
     - Asegura prefijo `+`.
+    - Si el usuario manda un numero LOCAL de Mexico (10 digitos sin lada),
+      le agrega automaticamente +52. El usuario NO necesita escribir +52.
     - Mexico WhatsApp viene como +521XXXXXXXXXX (con 1 movil); Cal.com /
-      libphonenumber lo quieren sin el 1: +52XXXXXXXXXX (10 digitos).
+      libphonenumber lo quieren sin el 1: +52XXXXXXXXXX (12 digitos con lada).
     - Valida largo basico (10-15 digitos despues del +).
     """
     if not raw:
@@ -99,15 +101,22 @@ def _normalize_phone(raw: str | None) -> str | None:
     cleaned = "".join(c for c in str(raw) if c.isdigit() or c == "+")
     if not cleaned:
         return None
-    if not cleaned.startswith("+"):
-        cleaned = "+" + cleaned
-    # +521XXXXXXXXXX (14 chars) -> +52XXXXXXXXXX (13 chars)
-    if cleaned.startswith("+521") and len(cleaned) == 14:
-        cleaned = "+52" + cleaned[4:]
-    digits = cleaned[1:]
-    if not digits.isdigit() or not (10 <= len(digits) <= 15):
+    has_plus = cleaned.startswith("+")
+    digits = cleaned.lstrip("+")
+    if not digits.isdigit():
         return None
-    return cleaned
+
+    # Variante movil de Mexico: 521XXXXXXXXXX (13) -> 52XXXXXXXXXX (12).
+    if digits.startswith("521") and len(digits) == 13:
+        digits = "52" + digits[3:]
+
+    if not has_plus and len(digits) == 10:
+        # Numero local mexicano sin lada -> agrega +52 automaticamente.
+        digits = "52" + digits
+
+    if not (10 <= len(digits) <= 15):
+        return None
+    return "+" + digits
 
 
 async def book(
