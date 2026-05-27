@@ -50,7 +50,26 @@ class Settings(BaseSettings):
     dashboard_cors_origins: str = (
         "https://luce-real-estate-landing.vercel.app,http://localhost:5173,http://localhost:3000"
     )
-    dashboard_cors_origin_regex: str = r"https://.*\.vercel\.app"
+    # Por defecto sin regex (estaba aceptando *.vercel.app y eso permitia
+    # a cualquiera deployar a Vercel y consumir el endpoint). Si se
+    # necesita matchear varios subdominios, definir explicitamente con
+    # la variable de entorno DASHBOARD_CORS_ORIGIN_REGEX.
+    dashboard_cors_origin_regex: str = ""
+
+    # --- Webchat (widget en alekagency.com) ----------------------------
+    # Si se define, /api/webchat exige el header X-API-Key con este valor.
+    # Asi el proxy de Next.js es el unico que puede llegar al endpoint.
+    webchat_api_key: str = ""
+    # Rate limit por IP (sliding window). 0 desactiva.
+    webchat_rate_limit_per_min: int = 30
+    # Limite de longitud del texto entrante (ya se truncaba a 2000;
+    # ahora se rechaza el request si excede mucho).
+    webchat_max_text_len: int = 2000
+    # Origenes permitidos para el widget (CORS, header Origin).
+    # Vacio = no se restringe por CORS (cualquier dominio puede hacer
+    # cross-origin). Util para llamadas server-to-server, que es
+    # exactamente nuestro caso (Next.js proxy).
+    webchat_cors_origins: str = ""
 
     @property
     def prompts_dir(self) -> Path:

@@ -9,10 +9,11 @@ from typing import Any
 import structlog
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import api as dashboard_api
-from app import bot_settings, buffer, channel_flags, memory
+from app import bot_settings, buffer, channel_flags, memory, rate_limit
 from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app.config import get_settings
@@ -30,7 +31,36 @@ log = structlog.get_logger(__name__)
 
 app = FastAPI(title="Chatbot Luce Real Estate")
 
-# CORS: permite al dashboard (Vercel + localhost dev) consumir /api/*
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds defensive HTTP headers to every response.
+
+    No CSP here on purpose: the /panel page uses inline scripts and the
+    public widget always reaches us cross-origin from the Next.js proxy,
+    so a strict CSP would either need a nonce-aware rewrite or block
+    legitimate traffic. The headers below are framework-agnostic and
+    safe to apply blanket-style.
+    """
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        response: Response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Referrer-Policy", "strict-origin-when-cross-origin"
+        )
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS: permite al dashboard (Vercel + localhost dev) consumir /api/*.
+# El regex por defecto vacio: si tu deploy lo necesita, sobreescribe via
+# DASHBOARD_CORS_ORIGIN_REGEX (preferiblemente un regex pegado a TU
+# dominio, no a *.vercel.app).
 _origins = [o.strip() for o in settings.dashboard_cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +72,22 @@ app.add_middleware(
 )
 
 app.include_router(dashboard_api.router)
+
+
+# ---------------------------------------------------------------------------
+# Webchat shared-secret guard. The endpoint is meant to be reached only by
+# the Next.js proxy (which sends `X-API-Key`). If `WEBCHAT_API_KEY` is not
+# configured we fall back to the previous open behavior so existing
+# deployments are not broken by this rollout.
+# ---------------------------------------------------------------------------
+
+
+def _require_webchat_key(x_api_key: str | None) -> None:
+    expected = settings.webchat_api_key
+    if not expected:
+        return
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="webchat api key invalido")
 
 # Conjunto de tasks vivos. Sin esta referencia fuerte el GC puede matar
 # `asyncio.create_task(...)` a media ejecucion (gotcha conocido de Python).
@@ -558,13 +604,39 @@ class WebchatIn(BaseModel):
 
 
 @app.post("/api/webchat")
-async def webchat(payload: WebchatIn) -> dict[str, Any]:
+async def webchat(
+    payload: WebchatIn,
+    request: Request,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    # Shared-secret check (opt-in). If WEBCHAT_API_KEY is set in env,
+    # only callers that present the matching header get through.
+    _require_webchat_key(x_api_key)
+
+    # Per-IP rate limit (sliding window, in-process). Reasonable defaults
+    # are enforced by settings; setting webchat_rate_limit_per_min=0 disables.
+    rl_limit = settings.webchat_rate_limit_per_min
+    if rl_limit > 0:
+        ok, retry_after = rate_limit.hit(
+            f"webchat:{rate_limit.client_ip(request)}",
+            limit=rl_limit,
+            window_seconds=60,
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=429,
+                detail="rate_limited",
+                headers={"Retry-After": str(retry_after)},
+            )
+
     chat_id = (payload.chat_id or "").strip()
     text = (payload.text or "").strip()
     if not chat_id or not text:
         raise HTTPException(status_code=400, detail="chat_id y text son obligatorios")
-    if len(text) > 2000:
-        text = text[:2000]
+    if len(text) > settings.webchat_max_text_len:
+        # Antes: truncaba silenciosamente. Ahora: rechaza para que el
+        # cliente sepa que paso. El proxy de Next.js ya limita a 4000.
+        raise HTTPException(status_code=413, detail="text_too_long")
     # Interruptor global del canal web (panel /panel).
     if not await channel_flags.is_enabled("webchat"):
         log.info("webchat_channel_off", chat_id=chat_id)
