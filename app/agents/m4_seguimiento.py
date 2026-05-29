@@ -6,9 +6,10 @@ import asyncio
 
 from openai import OpenAI
 
-from app.config import get_settings, load_prompt
+from app.config import get_settings
+from app.security.system_prompt import secure_system_prompt
 
-_SYSTEM = load_prompt("m4_seguimiento")
+_SYSTEM = secure_system_prompt("m4_seguimiento")
 
 
 def _client() -> OpenAI:

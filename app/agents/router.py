@@ -7,11 +7,12 @@ from typing import Literal
 
 from openai import OpenAI
 
-from app.config import get_settings, load_prompt
+from app.config import get_settings
+from app.security.system_prompt import secure_system_prompt
 
 Route = Literal["M1", "M2", "M3", "M4"]
 _VALID: set[str] = {"M1", "M2", "M3", "M4"}
-_SYSTEM = load_prompt("router")
+_SYSTEM = secure_system_prompt("router")
 
 
 def _client() -> OpenAI:

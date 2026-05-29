@@ -9,10 +9,11 @@ from zoneinfo import ZoneInfo
 
 from openai import OpenAI
 
-from app.config import get_settings, load_prompt
+from app.config import get_settings
+from app.security.system_prompt import secure_system_prompt
 from app.tools import cal, contactos
 
-_SYSTEM = load_prompt("m2_agendamiento")
+_SYSTEM = secure_system_prompt("m2_agendamiento")
 
 _TOOLS = [
     {
