@@ -16,7 +16,10 @@ from app.agents import extractor, m1_faq, m2_agendamiento, m3_catalogo, m4_segui
 from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app import memory
+from app.config import get_settings
 from app.media import describe_image, transcribe_audio
+from app.security import input_guard, output_guard, security_log, token_budget
+from app.security.prompt_fence import wrap_user_message
 from app.splitter import split_response
 from app.tools.cal import _normalize_phone
 from app.tools.contactos import merge_lead_fields
@@ -29,12 +32,15 @@ class ChatState(TypedDict, total=False):
     channel: Literal["telegram", "manychat", "webchat"]
     subchannel: Literal["whatsapp", "instagram", "messenger", "telegram", "webchat"]
     raw_messages: list[dict[str, Any]]
-    user_text: str
+    user_text: str          # texto FENCED, va al LLM (seguro)
+    user_text_raw: str      # texto sin fence (memoria, extractor)
     user_phone: str
     history: list[dict[str, str]]
     route: Literal["M1", "M2", "M3", "M4"]
     agent_response: str
     chunks: list[str]
+    blocked: bool           # input_guard decidió BLOCK
+    suspicious: bool        # input_guard decidió SUSPICIOUS (logueado)
 
 
 async def _resolve_media(state: ChatState) -> dict[str, Any]:
@@ -55,7 +61,85 @@ async def _resolve_media(state: ChatState) -> dict[str, Any]:
                 pieces.append(f"[Imagen recibida] {desc}")
         except Exception as e:  # noqa: BLE001
             log.warning("media_resolve_failed", media_type=media_type, error=str(e))
-    return {"user_text": "\n".join(p for p in pieces if p).strip()}
+    raw = "\n".join(p for p in pieces if p).strip()
+
+    # --- Capa 3: input guard ---
+    guard = input_guard.classify(raw)
+    chat_id = state.get("chat_id", "")
+    channel = state.get("channel", "")
+
+    settings = get_settings()
+    # --- Circuit breaker global ---
+    if token_budget.global_over_budget(settings.global_token_budget_per_day):
+        security_log.log_event(
+            "global_budget_exhausted",
+            chat_id=chat_id,
+            severity="critical",
+            channel=channel,
+        )
+        return {
+            "user_text": "",
+            "user_text_raw": raw,
+            "blocked": True,
+            "agent_response": "Servicio temporalmente no disponible. Intenta más tarde.",
+        }
+
+    # --- Presupuesto por chat ---
+    if token_budget.chat_over_budget(chat_id, settings.chat_token_budget_per_day):
+        security_log.log_event(
+            "chat_budget_exhausted",
+            chat_id=chat_id,
+            severity="warning",
+            channel=channel,
+            tokens_used=token_budget.chat_usage(chat_id),
+        )
+        return {
+            "user_text": "",
+            "user_text_raw": raw,
+            "blocked": True,
+            "agent_response": (
+                "Recibí muchos mensajes tuyos hoy. Vuelve mañana o contacta a un asesor."
+            ),
+        }
+
+    if guard.is_block:
+        security_log.log_event(
+            "input_blocked",
+            chat_id=chat_id,
+            severity="warning",
+            channel=channel,
+            reasons=",".join(guard.reasons),
+            invisible=guard.invisible_chars_stripped,
+        )
+        return {
+            "user_text": "",
+            "user_text_raw": raw,
+            "blocked": True,
+            "agent_response": input_guard.BLOCK_RESPONSE_TEXTS[0],
+        }
+
+    # Texto saneado (sin caracteres invisibles). Para memoria/extractor.
+    sanitized = guard.sanitized or raw
+    if guard.is_suspicious:
+        security_log.log_event(
+            "input_suspicious",
+            chat_id=chat_id,
+            severity="info",
+            channel=channel,
+            reasons=",".join(guard.reasons),
+        )
+
+    # --- Capa 2: fence el texto antes de mandarlo al modelo ---
+    fenced = wrap_user_message(sanitized)
+    return {
+        "user_text": fenced,
+        "user_text_raw": sanitized,
+        "suspicious": guard.is_suspicious,
+    }
+
+
+def _blocked_branch(state: ChatState) -> str:
+    return "split" if state.get("blocked") else "load_memory"
 
 
 async def _load_memory(state: ChatState) -> dict[str, Any]:
@@ -104,7 +188,18 @@ async def _m4(state: ChatState) -> dict[str, Any]:
 
 
 async def _split(state: ChatState) -> dict[str, Any]:
-    return {"chunks": split_response(state.get("agent_response") or "")}
+    chunks = split_response(state.get("agent_response") or "")
+    # Capa 4: output guard antes de salir.
+    chunks, reasons = output_guard.sanitize_chunks(chunks)
+    if reasons:
+        security_log.log_event(
+            "output_sanitized",
+            chat_id=state.get("chat_id", ""),
+            severity="warning",
+            channel=state.get("channel", ""),
+            reasons=",".join(reasons[:5]),
+        )
+    return {"chunks": chunks}
 
 
 async def _send(state: ChatState) -> dict[str, Any]:
@@ -120,17 +215,28 @@ async def _send(state: ChatState) -> dict[str, Any]:
 
 
 async def _save_memory(state: ChatState) -> dict[str, Any]:
-    if state.get("user_text"):
-        await memory.append(state["chat_id"], "user", state["user_text"])
+    # Memoria guarda el texto crudo (no el envuelto en fence) para que el
+    # historial siga siendo legible para el modelo en turnos posteriores.
+    raw = state.get("user_text_raw") or ""
+    if raw:
+        await memory.append(state["chat_id"], "user", raw)
     if state.get("agent_response"):
         await memory.append(state["chat_id"], "assistant", state["agent_response"])
+    # Estimación rápida de tokens consumidos (input + output) para el budget.
+    used = token_budget.estimate_tokens(raw) + token_budget.estimate_tokens(
+        state.get("agent_response") or ""
+    )
+    if used:
+        token_budget.record(state.get("chat_id", ""), used)
     return {}
 
 
 async def _extract_lead(state: ChatState) -> dict[str, Any]:
     """Corre despues de send: extrae datos del lead y mergea en `contactos`
     sin sobrescribir lo que el asesor haya editado a mano."""
-    text = state.get("user_text") or ""
+    if state.get("blocked"):
+        return {}
+    text = state.get("user_text_raw") or ""
     if not text.strip():
         return {}
     try:
@@ -165,7 +271,13 @@ def build_graph():
     g.add_node("extract_lead", _extract_lead)
 
     g.set_entry_point("resolve_media")
-    g.add_edge("resolve_media", "load_memory")
+    # Si input_guard / budget bloquearon, saltamos memoria + router + agentes
+    # y vamos directo a split/send con la respuesta neutral ya seteada.
+    g.add_conditional_edges(
+        "resolve_media",
+        _blocked_branch,
+        {"split": "split", "load_memory": "load_memory"},
+    )
     g.add_edge("load_memory", "router")
     g.add_conditional_edges(
         "router",

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
+import time
+from collections import deque
 from typing import Any
 
 import structlog
@@ -18,6 +21,7 @@ from app.channels import manychat as manychat_chan
 from app.channels import telegram as telegram_chan
 from app.config import get_settings
 from app.graph import dispatch, dispatch_webchat
+from app.security import input_guard, security_log
 from pydantic import BaseModel
 
 settings = get_settings()
@@ -56,6 +60,76 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Rechaza requests con Content-Length excesivo antes de leerlos.
+
+    Capa anti-DoS contra payloads gigantes. El límite real de WhatsApp /
+    Telegram es muy bajo (<100 KB típico) así que 1 MB sobra para uso
+    normal y bloquea abusos. Configurable via MAX_REQUEST_BODY_BYTES.
+    """
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        max_bytes = get_settings().max_request_body_bytes
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > max_bytes:
+            return Response(status_code=413, content="payload too large")
+        return await call_next(request)
+
+
+app.add_middleware(BodySizeLimitMiddleware)
+
+
+# Dedup de update_id de Telegram (idempotencia). Ventana corta en memoria:
+# si el contenedor reinicia podríamos reprocesar un mensaje, pero el
+# coste es bajo y la implementación tiene complejidad cero.
+_RECENT_TG_IDS: deque[int] = deque(maxlen=2000)
+_RECENT_TG_SET: set[int] = set()
+
+
+def _telegram_dedupe(update_id: int | None) -> bool:
+    """True si ya vimos ese update_id en los últimos N. Idempotencia."""
+    if update_id is None:
+        return False
+    if update_id in _RECENT_TG_SET:
+        return True
+    _RECENT_TG_IDS.append(update_id)
+    _RECENT_TG_SET.add(update_id)
+    if len(_RECENT_TG_IDS) >= _RECENT_TG_IDS.maxlen:
+        # mantiene el set sincronizado al rotar la deque
+        _RECENT_TG_SET.clear()
+        _RECENT_TG_SET.update(_RECENT_TG_IDS)
+    return False
+
+
+def _check_chat_rate_limit(chat_id: str, channel: str) -> tuple[bool, int]:
+    """Aplica límite por minuto y por día al chat_id. Devuelve (allowed, retry_after)."""
+    s = get_settings()
+    ok_min, retry_min = rate_limit.hit(
+        f"chat:{chat_id}:min", s.chat_rate_limit_per_min, 60
+    )
+    if not ok_min:
+        security_log.log_event(
+            "chat_rate_limit_minute",
+            chat_id=chat_id,
+            severity="warning",
+            channel=channel,
+            retry_after=retry_min,
+        )
+        return False, retry_min
+    ok_day, retry_day = rate_limit.hit(
+        f"chat:{chat_id}:day", s.chat_rate_limit_per_day, 86400
+    )
+    if not ok_day:
+        security_log.log_event(
+            "chat_rate_limit_day",
+            chat_id=chat_id,
+            severity="warning",
+            channel=channel,
+        )
+        return False, retry_day
+    return True, 0
 
 # CORS: permite al dashboard (Vercel + localhost dev) consumir /api/*.
 # El regex por defecto vacio: si tu deploy lo necesita, sobreescribe via
@@ -142,7 +216,7 @@ async def health() -> dict[str, str]:
 # Version "marker" hardcoded — se actualiza con cada feature releveante para
 # poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
 # cambio que necesite confirmacion en produccion.
-_VERSION = "v12-contactos-geo-2026-05-22"
+_VERSION = "v13-security-hardening-2026-05-29"
 
 
 @app.get("/version")
@@ -164,13 +238,27 @@ async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, str]:
-    if (
-        settings.telegram_webhook_secret
-        and x_telegram_bot_api_secret_token != settings.telegram_webhook_secret
-    ):
-        raise HTTPException(status_code=403, detail="invalid secret")
+    # Comparación constant-time del secret (antes usaba !=, vulnerable a
+    # timing attacks). Si la variable no está configurada, no exigimos
+    # header (compatibilidad), pero registramos un warning una sola vez.
+    if settings.telegram_webhook_secret:
+        provided = x_telegram_bot_api_secret_token or ""
+        expected = settings.telegram_webhook_secret
+        if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+            security_log.log_event(
+                "webhook_invalid_signature",
+                chat_id=None,
+                severity="warning",
+                channel="telegram",
+            )
+            raise HTTPException(status_code=403, detail="invalid secret")
 
     update = await request.json()
+
+    # Idempotencia: Telegram reintenta si tardamos en responder.
+    if _telegram_dedupe(update.get("update_id") if isinstance(update, dict) else None):
+        return {"status": "duplicate"}
+
     parsed = telegram_chan.parse_update(update)
     if not parsed:
         return {"status": "ignored"}
@@ -179,6 +267,11 @@ async def telegram_webhook(
     if not await channel_flags.is_enabled("telegram"):
         log.info("telegram_channel_off", chat_id=parsed["chat_id"])
         return {"status": "channel_off"}
+
+    # Rate limit por chat: detiene un usuario que mande N mensajes/min.
+    ok, retry = _check_chat_rate_limit(parsed["chat_id"], "telegram")
+    if not ok:
+        return {"status": "rate_limited", "retry_after": str(retry)}
 
     media_url = None
     if parsed["media_file_id"]:
@@ -214,7 +307,26 @@ async def telegram_webhook(
 
 
 @app.api_route("/webhook/manychat", methods=["GET", "POST"])
-async def manychat_webhook(request: Request) -> dict[str, str]:
+async def manychat_webhook(
+    request: Request,
+    x_manychat_secret: str | None = Header(default=None),
+) -> dict[str, str]:
+    # Shared secret opt-in. Si configuras MANYCHAT_WEBHOOK_SECRET en
+    # EasyPanel y agregas un header `X-ManyChat-Secret` con el mismo valor
+    # al External Request de ManyChat, nadie más puede mandarle POSTs
+    # falsos al endpoint.
+    expected = settings.manychat_webhook_secret
+    if expected:
+        provided = x_manychat_secret or ""
+        if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+            security_log.log_event(
+                "webhook_invalid_signature",
+                chat_id=None,
+                severity="warning",
+                channel="manychat",
+            )
+            raise HTTPException(status_code=403, detail="invalid secret")
+
     if request.method == "GET":
         # ManyChat (plan básico) solo permite GET con query params
         body = dict(request.query_params)
@@ -256,6 +368,11 @@ async def manychat_webhook(request: Request) -> dict[str, str]:
     if not await channel_flags.is_enabled(subchannel):
         log.info("manychat_channel_off", chat_id=parsed["chat_id"], subchannel=subchannel)
         return {"status": "channel_off"}
+
+    # Rate limit por chat.
+    ok, retry = _check_chat_rate_limit(parsed["chat_id"], subchannel)
+    if not ok:
+        return {"status": "rate_limited", "retry_after": str(retry)}
 
     # Toggle per-conversacion (ver telegram_webhook).
     if not await bot_settings.is_enabled(parsed["chat_id"]):
@@ -641,6 +758,15 @@ async def webchat(
     if not await channel_flags.is_enabled("webchat"):
         log.info("webchat_channel_off", chat_id=chat_id)
         return {"chunks": ["El asistente no está disponible en este momento."]}
+    # Rate limit por chat_id (además del per-IP). Un solo navegador puede
+    # cambiar de IP (proxy, móvil) pero su chat_id en localStorage es estable.
+    ok, retry = _check_chat_rate_limit(chat_id, "webchat")
+    if not ok:
+        raise HTTPException(
+            status_code=429,
+            detail="rate_limited",
+            headers={"Retry-After": str(retry)},
+        )
     log.info("webchat_in", chat_id=chat_id, text_len=len(text))
     try:
         chunks = await dispatch_webchat(chat_id, text)
