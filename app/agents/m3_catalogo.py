@@ -7,10 +7,11 @@ import json
 
 from openai import OpenAI
 
-from app.config import get_settings, load_prompt
+from app.config import get_settings
+from app.security.system_prompt import secure_system_prompt
 from app.tools.properties import buscar_propiedades
 
-_SYSTEM = load_prompt("m3_catalogo")
+_SYSTEM = secure_system_prompt("m3_catalogo")
 
 _TOOLS = [
     {

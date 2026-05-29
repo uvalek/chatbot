@@ -71,6 +71,27 @@ class Settings(BaseSettings):
     # exactamente nuestro caso (Next.js proxy).
     webchat_cors_origins: str = ""
 
+    # --- Endurecido de webhooks ----------------------------------------
+    # ManyChat no firma sus External Requests. Para evitar que cualquiera
+    # mande POSTs falsos al webhook, definir esta variable y configurar
+    # ManyChat para enviar el mismo valor en el header X-ManyChat-Secret.
+    # Vacio = no se exige (compatibilidad hacia atras).
+    manychat_webhook_secret: str = ""
+    # Tamaño máximo del body de cualquier request (bytes).
+    max_request_body_bytes: int = 1024 * 1024  # 1 MB
+
+    # --- Anti-abuso por conversación -----------------------------------
+    # Rate limit por chat_id (cualquier canal). 0 desactiva.
+    chat_rate_limit_per_min: int = 20
+    chat_rate_limit_per_day: int = 500
+    # Presupuesto de tokens por chat por día. 0 desactiva.
+    chat_token_budget_per_day: int = 80000
+    # Circuit breaker global: si el bot pasa este gasto diario, para todo
+    # hasta el reset (UTC). 0 desactiva.
+    global_token_budget_per_day: int = 2000000
+    # Eventos sospechosos en ventana de 10 minutos antes de bloquear el chat.
+    suspicious_block_threshold: int = 5
+
     @property
     def prompts_dir(self) -> Path:
         return Path(__file__).parent / "prompts"

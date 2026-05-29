@@ -11,9 +11,10 @@ import asyncio
 import httpx
 from openai import OpenAI
 
-from app.config import get_settings, load_prompt
+from app.config import get_settings
+from app.security.system_prompt import secure_system_prompt
 
-_SYSTEM = load_prompt("m1_faq")
+_SYSTEM = secure_system_prompt("m1_faq")
 _TOP_K = 4
 
 
