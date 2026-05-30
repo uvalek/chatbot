@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from openai import OpenAI
 
 from app.config import get_settings
+from app.llm import completion_params
 from app.security.system_prompt import secure_system_prompt
 from app.tools import cal, contactos
 
@@ -174,7 +175,7 @@ async def respond(
                 model=s.openai_model_brain,
                 messages=msgs,  # type: ignore[arg-type]
                 tools=_TOOLS,  # type: ignore[arg-type]
-                temperature=0.7,
+                **completion_params(s.openai_model_brain, temperature=0.7),
             )
             return resp.choices[0].message.model_dump()
 

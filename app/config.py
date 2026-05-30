@@ -8,9 +8,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     openai_api_key: str
-    openai_model_brain: str = "gpt-4.1-mini"
-    openai_model_catalog: str = "gpt-4o-mini"
-    openai_model_vision: str = "gpt-4o-mini"
+    openai_model_brain: str = "gpt-5.4-nano"
+    openai_model_catalog: str = "gpt-5.4-nano"
+    openai_model_vision: str = "gpt-5.4-nano"
+    # Solo aplica a modelos de razonamiento (gpt-5 / o-series). En modelos
+    # clásicos (gpt-4.1/4o) se ignora. Override con OPENAI_REASONING_EFFORT.
+    openai_reasoning_effort: str = "low"
+    # Piso de max_completion_tokens para que el "pensamiento" interno no deje
+    # la respuesta vacía (el router pedía solo 4 tokens).
+    openai_reasoning_max_tokens_floor: int = 2000
 
     supabase_url: str
     supabase_service_key: str

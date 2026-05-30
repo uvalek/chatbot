@@ -30,8 +30,9 @@ async def classify(user_text: str, history: list[dict[str, str]] | None = None) 
         resp = _client().chat.completions.create(
             model=settings.openai_model_brain,
             messages=msgs,  # type: ignore[arg-type]
-            temperature=0,
-            max_tokens=4,
+            **completion_params(
+                settings.openai_model_brain, temperature=0, max_tokens=4
+            ),
         )
         return (resp.choices[0].message.content or "").strip().upper()
 

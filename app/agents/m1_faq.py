@@ -67,7 +67,7 @@ async def respond(user_text: str, history: list[dict[str, str]]) -> str:
         resp = _client().chat.completions.create(
             model=s.openai_model_brain,
             messages=msgs,  # type: ignore[arg-type]
-            temperature=0.7,
+            **completion_params(s.openai_model_brain, temperature=0.7),
         )
         return resp.choices[0].message.content or ""
 

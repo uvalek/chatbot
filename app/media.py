@@ -51,6 +51,7 @@ async def describe_image(url: str) -> str:
                     ],
                 }
             ],
+            **completion_params(settings.openai_model_vision),
         )
         return resp.choices[0].message.content or ""
 
