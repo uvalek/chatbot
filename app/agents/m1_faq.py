@@ -12,6 +12,7 @@ import httpx
 from openai import OpenAI
 
 from app.config import get_settings
+from app.llm import completion_params
 from app.security.system_prompt import secure_system_prompt
 
 _SYSTEM = secure_system_prompt("m1_faq")

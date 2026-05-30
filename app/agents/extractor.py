@@ -25,6 +25,7 @@ import structlog
 from openai import OpenAI
 
 from app.config import get_settings
+from app.llm import completion_params
 
 log = structlog.get_logger(__name__)
 

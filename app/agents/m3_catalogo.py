@@ -8,6 +8,7 @@ import json
 from openai import OpenAI
 
 from app.config import get_settings
+from app.llm import completion_params
 from app.security.system_prompt import secure_system_prompt
 from app.tools.properties import buscar_propiedades
 

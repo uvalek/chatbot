@@ -8,6 +8,7 @@ from typing import Literal
 from openai import OpenAI
 
 from app.config import get_settings
+from app.llm import completion_params
 from app.security.system_prompt import secure_system_prompt
 
 Route = Literal["M1", "M2", "M3", "M4"]

@@ -9,6 +9,7 @@ import httpx
 from openai import OpenAI
 
 from app.config import get_settings, load_prompt
+from app.llm import completion_params
 
 _VISION_PROMPT = load_prompt("vision")
 
