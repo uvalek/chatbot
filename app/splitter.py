@@ -40,6 +40,25 @@ def _coalesce(items: list[str], max_n: int) -> list[str]:
     return keep + [tail]
 
 
+def _dedupe(items: list[str]) -> list[str]:
+    """Quita mensajes EXACTAMENTE duplicados conservando el orden.
+
+    El modelo a veces emite su respuesta dos veces en un mismo turno (dos
+    arrays JSON pegados idénticos). Al recuperarlos los combinábamos y el
+    usuario recibía el mismo bloque repetido. Aquí lo colapsamos a uno.
+    Comparamos con el texto ya normalizado (sin espacios extremos).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for it in items:
+        key = it.strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
+
+
 def _normalize(data: object) -> list[str]:
     """Aplana un valor parseado a una lista de strings no vacíos."""
     out: list[str] = []
@@ -105,13 +124,13 @@ def split_response(raw: str) -> list[str]:
 
     try:
         data = json.loads(cleaned)
+        items = _normalize(data)
     except json.JSONDecodeError:
-        recovered = _try_recover(cleaned)
-        if recovered:
-            return _coalesce(recovered, MAX_MESSAGES)
-        return [raw.strip()]
+        items = _try_recover(cleaned)
 
-    items = _normalize(data)
     if not items:
         return [raw.strip()]
+    # Colapsa mensajes idénticos (el modelo a veces repite el array completo)
+    # ANTES de coalescer, para no enviar el mismo bloque dos veces.
+    items = _dedupe(items)
     return _coalesce(items, MAX_MESSAGES)

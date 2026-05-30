@@ -59,6 +59,18 @@ def test_recupera_strings_de_texto_basurita():
     assert out == ["uno", "dos"]
 
 
+def test_dos_arrays_identicos_se_deduplican():
+    # El modelo a veces emite su respuesta DOS veces (array repetido,
+    # separado por línea en blanco). No debemos enviar el mismo bloque dos veces.
+    out = split_response('["a", "b"]\n\n["a", "b"]')
+    assert out == ["a", "b"]
+
+
+def test_array_con_items_repetidos_se_deduplica():
+    out = split_response('["hola", "mundo", "hola"]')
+    assert out == ["hola", "mundo"]
+
+
 def test_coalesce_si_pasa_el_limite():
     raw = '["a", "b", "c", "d", "e", "f"]'
     out = split_response(raw)
