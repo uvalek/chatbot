@@ -129,15 +129,16 @@ _PHONE_INSTRUCTION_RULE_AUTO = (
     "- NUNCA pidas número de teléfono, ya lo tenemos desde WhatsApp"
 )
 _PHONE_INSTRUCTION_STEP_ASK = (
-    "\n3. Número de teléfono celular en formato internacional (ej: +52 55 1234 5678).\n"
-    "   Es OBLIGATORIO porque en este canal no lo tenemos automáticamente y el asesor "
-    "necesita poder contactar al usuario para confirmar la visita."
+    "\n3. Número de celular a 10 dígitos (ej: 2414568392). NO pidas LADA ni el +52: "
+    "nosotros le ponemos el +52 automáticamente. Es obligatorio para que el asesor "
+    "pueda confirmar la visita."
 )
 _PHONE_INSTRUCTION_RULE_ASK = (
-    "- SIEMPRE pide el número de teléfono celular en este canal y pásalo a "
-    "book_appointment como `userPhone` en formato E.164 (ej: +5215512345678).\n"
-    "- Si el usuario te da un número sin lada, asume México (+52) y agrégalo.\n"
-    "- Valida que tenga 10 dígitos despues del prefijo del pais; si no, vuelve a pedirlo."
+    "- Pide el celular SOLO a 10 dígitos (ej: 2414568392). NUNCA pidas LADA "
+    "internacional, código de país ni el +52; el sistema lo agrega solo.\n"
+    "- Pásalo a book_appointment como `userPhone` tal cual lo dio el usuario "
+    "(los 10 dígitos); el servidor le antepone el +52.\n"
+    "- Solo si da menos de 10 dígitos, pídelo de nuevo amablemente."
 )
 
 
