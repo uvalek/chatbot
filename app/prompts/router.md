@@ -27,6 +27,15 @@ REGLA CLAVE M2 vs M3:
 - "Quiero ir a ver la casa del centro" → M2 (ya sabe cuál y quiere ir)
 - "Quiero comprar casa" → M3 (necesita ver opciones primero)
 - "Agéndame para ver la casa de Xaloztoc" → M2 (ya decidió)
+- "Si, quiero visitarla" / "Sí, agéndame" / "quiero la visita" / "sí, agenda" → M2
+- Cualquier fecha/hora sobre una visita ("el lunes en la mañana", "mañana a las 4pm", "el viernes", "esta tarde") → M2
+
+REGLA DOMINANTE — MENSAJE COMBINADO (usuario manda 2+ frases en un solo turno):
+- Si CUALQUIERA de las frases tiene intención de AGENDAR (visitar, agendar, cita, fecha) → SIEMPRE M2, aunque las otras frases sean preguntas de catálogo. M2 puede responder esas preguntas además de agendar.
+- Ejemplos:
+  * "si, quiero visitarla. ah pero qué crédito acepta" → M2
+  * "agéndame y dime cuánto cuesta" → M2
+  * "el lunes en la mañana, y aceptas infonavit?" → M2
 
 REGLAS ADICIONALES:
 - Saludo simple sin contexto → M1
