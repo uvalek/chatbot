@@ -26,6 +26,14 @@ from app.tools.contactos import merge_lead_fields
 
 log = structlog.get_logger(__name__)
 
+# Respuesta amable si un agente truena (error de OpenAI, red, modelo, etc.).
+# Evita que el bot se quede MUDO: el usuario siempre recibe algo y el error
+# real queda en los logs para diagnóstico.
+_AGENT_FALLBACK = (
+    "Disculpa, tuve un problemita técnico procesando tu mensaje. "
+    "¿Me lo puedes repetir, por favor?"
+)
+
 
 class ChatState(TypedDict, total=False):
     chat_id: str
@@ -148,7 +156,11 @@ async def _load_memory(state: ChatState) -> dict[str, Any]:
 
 
 async def _route(state: ChatState) -> dict[str, Any]:
-    code = await router.classify(state.get("user_text", ""), state.get("history"))
+    try:
+        code = await router.classify(state.get("user_text", ""), state.get("history"))
+    except Exception as e:  # noqa: BLE001
+        log.exception("router_failed", error=str(e))
+        code = "M3"  # ante la duda, catálogo (el mismo default del router)
     return {"route": code}
 
 
@@ -157,7 +169,11 @@ def _route_branch(state: ChatState) -> str:
 
 
 async def _m1(state: ChatState) -> dict[str, Any]:
-    text = await m1_faq.respond(state["user_text"], state.get("history", []))
+    try:
+        text = await m1_faq.respond(state["user_text"], state.get("history", []))
+    except Exception as e:  # noqa: BLE001
+        log.exception("agent_failed", agent="M1", error=str(e))
+        text = _AGENT_FALLBACK
     return {"agent_response": text}
 
 
@@ -167,23 +183,35 @@ async def _m2(state: ChatState) -> dict[str, Any]:
     canal_visible = state.get("subchannel") or (
         "whatsapp" if state.get("channel") == "manychat" else state.get("channel", "")
     )
-    text = await m2_agendamiento.respond(
-        state["user_text"],
-        state.get("history", []),
-        user_phone=state.get("user_phone", ""),
-        chat_id=state.get("chat_id", ""),
-        canal=canal_visible,
-    )
+    try:
+        text = await m2_agendamiento.respond(
+            state["user_text"],
+            state.get("history", []),
+            user_phone=state.get("user_phone", ""),
+            chat_id=state.get("chat_id", ""),
+            canal=canal_visible,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("agent_failed", agent="M2", error=str(e))
+        text = _AGENT_FALLBACK
     return {"agent_response": text}
 
 
 async def _m3(state: ChatState) -> dict[str, Any]:
-    text = await m3_catalogo.respond(state["user_text"], state.get("history", []))
+    try:
+        text = await m3_catalogo.respond(state["user_text"], state.get("history", []))
+    except Exception as e:  # noqa: BLE001
+        log.exception("agent_failed", agent="M3", error=str(e))
+        text = _AGENT_FALLBACK
     return {"agent_response": text}
 
 
 async def _m4(state: ChatState) -> dict[str, Any]:
-    text = await m4_seguimiento.respond(state["user_text"], state.get("history", []))
+    try:
+        text = await m4_seguimiento.respond(state["user_text"], state.get("history", []))
+    except Exception as e:  # noqa: BLE001
+        log.exception("agent_failed", agent="M4", error=str(e))
+        text = _AGENT_FALLBACK
     return {"agent_response": text}
 
 
