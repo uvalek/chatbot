@@ -54,7 +54,9 @@ async def respond(user_text: str, history: list[dict[str, str]]) -> str:
                 model=s.openai_model_catalog,
                 messages=msgs,  # type: ignore[arg-type]
                 tools=_TOOLS,  # type: ignore[arg-type]
-                **completion_params(s.openai_model_catalog, temperature=0.1),
+                **completion_params(
+                    s.openai_model_catalog, temperature=0.1, has_tools=True
+                ),
             )
             return resp.choices[0].message.model_dump()
 

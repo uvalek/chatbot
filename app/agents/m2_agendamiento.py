@@ -175,7 +175,9 @@ async def respond(
                 model=s.openai_model_brain,
                 messages=msgs,  # type: ignore[arg-type]
                 tools=_TOOLS,  # type: ignore[arg-type]
-                **completion_params(s.openai_model_brain, temperature=0.7),
+                **completion_params(
+                    s.openai_model_brain, temperature=0.7, has_tools=True
+                ),
             )
             return resp.choices[0].message.model_dump()
 

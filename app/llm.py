@@ -33,19 +33,26 @@ def completion_params(
     temperature: float | None = None,
     max_tokens: int | None = None,
     reasoning_effort: str | None = None,
+    has_tools: bool = False,
 ) -> dict:
     """Devuelve los kwargs compatibles con `chat.completions.create` para `model`.
 
     Para modelos de razonamiento: omite `temperature`, traduce `max_tokens` a
     `max_completion_tokens` (con un piso seguro) y agrega `reasoning_effort`.
     Para modelos clásicos: pasa `temperature` y `max_tokens` tal cual.
+
+    `has_tools`: pásalo en True cuando la llamada use function tools. OpenAI
+    rechaza `reasoning_effort` + tools en /v1/chat/completions (pide usar
+    /v1/responses), así que en ese caso omitimos `reasoning_effort`.
     """
     s = get_settings()
     params: dict = {}
     if is_reasoning_model(model):
-        effort = reasoning_effort or s.openai_reasoning_effort
-        if effort:
-            params["reasoning_effort"] = effort
+        # reasoning_effort NO es compatible con function tools en chat.completions.
+        if not has_tools:
+            effort = reasoning_effort or s.openai_reasoning_effort
+            if effort:
+                params["reasoning_effort"] = effort
         if max_tokens is not None:
             params["max_completion_tokens"] = max(
                 max_tokens, s.openai_reasoning_max_tokens_floor
