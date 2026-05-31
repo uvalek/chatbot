@@ -72,13 +72,19 @@ def log_event(
     payload: dict[str, Any] = {"event": event, "chat": hashed, "severity": severity}
     payload.update(fields)
 
-    # structlog (stdout/journalctl)
+    # structlog (stdout/journalctl).
+    # OJO: structlog usa el PRIMER arg posicional como `event`. Nuestro
+    # `payload` ya trae una clave `event`, así que pasar **payload chocaba
+    # ("got multiple values for argument 'event'") y reventaba el nodo
+    # resolve_media -> el bot se quedaba MUDO (en TODOS los canales). Usamos
+    # el nombre del evento como mensaje y quitamos la clave duplicada.
+    kw = {k: v for k, v in payload.items() if k != "event"}
     if severity == "critical":
-        _struct_log.error("security_event", **payload)
+        _struct_log.error(event, **kw)
     elif severity == "warning":
-        _struct_log.warning("security_event", **payload)
+        _struct_log.warning(event, **kw)
     else:
-        _struct_log.info("security_event", **payload)
+        _struct_log.info(event, **kw)
 
     # archivo dedicado (best-effort)
     logger = _ensure_logger()
