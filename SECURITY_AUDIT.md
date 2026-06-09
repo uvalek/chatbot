@@ -406,7 +406,7 @@ manual:
 
 ```bash
 sudo apt-get install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d megachatbot-chatbotmain.aslx54.easypanel.host
+sudo certbot --nginx -d chatbotmainhetzner-chatbothetzner.3bmm1w.easypanel.host
 # El bot escucha en 127.0.0.1:8000; nginx expone 443.
 ```
 
@@ -491,7 +491,7 @@ está conectado:
 - Si el `TELEGRAM_WEBHOOK_SECRET` no estaba antes, configúralo:
   ```bash
   curl -X POST "https://api.telegram.org/bot<TG_TOKEN>/setWebhook" \
-       -d "url=https://megachatbot-chatbotmain.aslx54.easypanel.host/webhook/telegram" \
+       -d "url=https://chatbotmainhetzner-chatbothetzner.3bmm1w.easypanel.host/webhook/telegram" \
        -d "secret_token=<TG_SECRET_NUEVO>"
   ```
   y mete el mismo en EasyPanel: `TELEGRAM_WEBHOOK_SECRET=<TG_SECRET_NUEVO>`.
