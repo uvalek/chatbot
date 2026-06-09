@@ -216,7 +216,7 @@ async def health() -> dict[str, str]:
 # Version "marker" hardcoded — se actualiza con cada feature releveante para
 # poder verificar que EasyPanel redeployo. Subir el numero a mano en cada
 # cambio que necesite confirmacion en produccion.
-_VERSION = "v25-fix-security-log-real-2026-05-30"
+_VERSION = "v26-webchat-canal-2026-06-09"
 
 
 @app.get("/version")
@@ -767,6 +767,16 @@ async def webchat(
             detail="rate_limited",
             headers={"Retry-After": str(retry)},
         )
+    # Persiste canal="webchat" en contactos para que el dashboard etiquete
+    # bien la conversacion. Sin esto contactos.canal queda NULL y el dashboard
+    # asume "whatsapp" por defecto (ver app/api.py). Tambien corrige las
+    # conversaciones web que ya quedaron mal etiquetadas: _ensure_canal pisa
+    # el canal con "webchat" si era distinto.
+    try:
+        await _ensure_canal(chat_id, "webchat")
+    except Exception as e:  # noqa: BLE001
+        log.warning("webchat_persist_canal_failed", error=str(e), chat_id=chat_id)
+
     log.info("webchat_in", chat_id=chat_id, text_len=len(text))
     try:
         chunks = await dispatch_webchat(chat_id, text)
