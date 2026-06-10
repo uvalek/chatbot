@@ -248,7 +248,15 @@ async def _save_memory(state: ChatState) -> dict[str, Any]:
     raw = state.get("user_text_raw") or ""
     if raw:
         await memory.append(state["chat_id"], "user", raw)
-    if state.get("agent_response"):
+    # Guarda cada burbuja por separado (igual que se envían al usuario) para
+    # que el historial y el dashboard muestren mensajes individuales, no el
+    # array JSON crudo en un solo registro. Fallback a agent_response si por
+    # algún motivo no hubo chunks.
+    chunks = state.get("chunks") or []
+    if chunks:
+        for chunk in chunks:
+            await memory.append(state["chat_id"], "assistant", chunk)
+    elif state.get("agent_response"):
         await memory.append(state["chat_id"], "assistant", state["agent_response"])
     # Estimación rápida de tokens consumidos (input + output) para el budget.
     used = token_budget.estimate_tokens(raw) + token_budget.estimate_tokens(
